@@ -1,7 +1,7 @@
 from pathlib import Path
 import random
 import shutil
-SOURCE_DIR = Path("C:\\Users\\KIIT0001\\Desktop\\PROJECT\\FL-V1\\VisDrone2019-DET-train\\VisDrone2019-DET-train")
+SOURCE_DIR = Path("VisDrone2019-DET-train/VisDrone2019-DET-train")
 IMAGES_DIR = SOURCE_DIR / "images"
 ANNOTATIONS_DIR = SOURCE_DIR / "annotations"
 OUTPUT_DIR = Path("clients")

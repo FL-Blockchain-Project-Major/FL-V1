@@ -1,0 +1,21 @@
+# VisDrone YOLO dataset config for CLIENT_ID
+# Replace CLIENT_ID with: client1, client2, or client3
+
+path: data/CLIENT_ID      # relative to where you run client.py
+
+train: images             # folder inside 'path' used for training
+val:   images             # using same for val (small dataset)
+
+nc: 10                    # number of classes
+
+names:
+  0: pedestrian
+  1: people
+  2: bicycle
+  3: car
+  4: van
+  5: truck
+  6: tricycle
+  7: awning-tricycle
+  8: bus
+  9: motor

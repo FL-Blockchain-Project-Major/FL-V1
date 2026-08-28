@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment / secrets
+.env
+.env.*
+
+# YOLO model weights (large binary files)
+*.pt
+*.pth
+*.onnx
+
+# Training / evaluation output
+results/
+runs/
+aggregator/results/
+
+# Logs (keep structure, ignore content)
+aggregator/logs/
+client_project/logs/
+
+# Dataset files (large, distributed separately)
+clients/
+VisDrone2019-DET-train/
+VisDrone2019-DET-val/
+VisDrone2019-DET-test-dev/
+VisDrone2019-DET-test-challenge/
+client1_project/data/client1/images/
+client1_project/data/client1/labels/
+client1_project/data/client1/annotations/
+client1_project/data/client1/labels.cache
+client_project/data/*/images/
+client_project/data/*/labels/
+client_project/data/*/annotations/
+client_project/data/*.cache
+
+# OS / editor artifacts
+.DS_Store
+Thumbs.db
+.ipynb_checkpoints/
+*.swp
+*.swo
+
+# IDE
+.vscode/
+.idea/
