@@ -1,7 +1,7 @@
-# VisDrone YOLO dataset config for client1
-# Replace client1 with: client1, client2, or client3
+# VisDrone YOLO dataset config for client2
+# Replace client2 with: client1, client2, or client3
 
-path: data/client1      # relative to where you run client.py
+path: data/client2      # relative to where you run client.py
 
 train: images             # folder inside 'path' used for training
 val:   images             # using same for val (small dataset)
