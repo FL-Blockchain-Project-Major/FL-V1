@@ -7,38 +7,35 @@ from security.hashing import hash_parameters
 
 
 # =========================================================
+# PROJECT PATHS
+# =========================================================
+
+BASE_DIR = Path(__file__).resolve().parent
+
+DATASET_DIR = BASE_DIR / "data" / "client1"
+DATASET_PATH = DATASET_DIR / "client1.yaml"
+IMAGES_DIR = DATASET_DIR / "images"
+LABELS_DIR = DATASET_DIR / "labels"
+
+
+# =========================================================
 # CONFIGURATION
 # =========================================================
 
 CLIENT_ID = "client1"
 
-# Path to Client 1's YOLO dataset YAML file
-DATASET_PATH = "data/client1/client1.yaml"
-
-# Number of epochs Client 1 trains during each FL round
 LOCAL_EPOCHS = 1
-
-# Image size for YOLO
 IMAGE_SIZE = 640
 
-# Change this to the IP address of the aggregator laptop
-SERVER_ADDRESS = "192.168.1.10:8080"
+SERVER_ADDRESS = "10.5.70.249:8080"
 
 
 # =========================================================
-# HELPER FUNCTION
+# HELPER FUNCTIONS
 # =========================================================
 
 def count_training_images():
-
-    """
-    Count the number of images used by Client 1.
-    This number is sent to the aggregator for FedAvg.
-    """
-
-    image_dir = Path(
-        "data/client1/images"
-    )
+    """Count images in Client 1's local dataset."""
 
     extensions = [
         "*.jpg",
@@ -49,11 +46,48 @@ def count_training_images():
     total = 0
 
     for extension in extensions:
-        total += len(
-            list(image_dir.glob(extension))
-        )
+        total += len(list(IMAGES_DIR.glob(extension)))
 
     return total
+
+
+def count_label_files():
+    """Count YOLO label files."""
+
+    if not LABELS_DIR.exists():
+        return 0
+
+    return len(list(LABELS_DIR.glob("*.txt")))
+
+
+def count_model_parameters(model):
+    """
+    Count total and trainable model parameters.
+
+    IMPORTANT:
+    We use requires_grad, NOT grad.
+
+    grad is normally None before training starts.
+    """
+
+    total_params = sum(
+        p.numel()
+        for p in model.parameters()
+    )
+
+    trainable_params = sum(
+        p.numel()
+        for p in model.parameters()
+        if p.requires_grad
+    )
+
+    frozen_params = total_params - trainable_params
+
+    return (
+        total_params,
+        trainable_params,
+        frozen_params
+    )
 
 
 # =========================================================
@@ -69,21 +103,171 @@ class Client1(fl.client.NumPyClient):
         print("=" * 60)
 
         # -------------------------------------------------
-        # Load YOLOv11 Nano model
+        # DATASET PATHS
         # -------------------------------------------------
+
+        print(f"\nProject directory:")
+        print(BASE_DIR)
+
+        print(f"\nDataset directory:")
+        print(DATASET_DIR)
+
+        print(f"\nImages directory:")
+        print(IMAGES_DIR)
+
+        print(f"\nLabels directory:")
+        print(LABELS_DIR)
+
+        print(f"\nDataset YAML:")
+        print(DATASET_PATH)
+
+        # -------------------------------------------------
+        # VERIFY PATHS
+        # -------------------------------------------------
+
+        if not DATASET_DIR.exists():
+            raise FileNotFoundError(
+                f"Dataset directory not found:\n{DATASET_DIR}"
+            )
+
+        if not IMAGES_DIR.exists():
+            raise FileNotFoundError(
+                f"Images directory not found:\n{IMAGES_DIR}"
+            )
+
+        if not LABELS_DIR.exists():
+            raise FileNotFoundError(
+                f"Labels directory not found:\n{LABELS_DIR}"
+            )
+
+        if not DATASET_PATH.exists():
+            raise FileNotFoundError(
+                f"Dataset YAML not found:\n{DATASET_PATH}"
+            )
+
+        # -------------------------------------------------
+        # COUNT DATASET
+        # -------------------------------------------------
+
+        self.num_examples = count_training_images()
+        self.num_labels = count_label_files()
+
+        if self.num_examples == 0:
+            raise RuntimeError(
+                f"No images found in:\n{IMAGES_DIR}"
+            )
+
+        if self.num_labels == 0:
+            raise RuntimeError(
+                f"No YOLO label files found in:\n{LABELS_DIR}"
+            )
+
+        # -------------------------------------------------
+        # DATASET INFORMATION
+        # -------------------------------------------------
+
+        print("\n" + "=" * 60)
+        print("CLIENT 1 DATASET INFORMATION")
+        print("=" * 60)
+
+        print(
+            f"Images found             : "
+            f"{self.num_examples:,}"
+        )
+
+        print(
+            f"YOLO label files         : "
+            f"{self.num_labels:,}"
+        )
+
+        print("=" * 60)
+
+        # -------------------------------------------------
+        # LOAD YOLO MODEL
+        # -------------------------------------------------
+
+        print("\nLoading YOLOv11 Nano model...")
 
         self.yolo = YOLO("yolo11n.pt")
 
-        # Access underlying PyTorch model
+        # Underlying PyTorch model
         self.model = self.yolo.model
 
-        # Count local training samples
-        self.num_examples = count_training_images()
+        # -------------------------------------------------
+        # ENSURE PARAMETERS ARE TRAINABLE
+        # -------------------------------------------------
 
-        print(f"Client ID: {CLIENT_ID}")
-        print(f"Local training images: {self.num_examples}")
-        print("Client 1 initialized successfully.")
+        for parameter in self.model.parameters():
+            parameter.requires_grad = True
 
+        # -------------------------------------------------
+        # COUNT MODEL PARAMETERS
+        # -------------------------------------------------
+
+        (
+            self.total_params,
+            self.trainable_params,
+            self.frozen_params
+        ) = count_model_parameters(self.model)
+
+        # -------------------------------------------------
+        # MODEL INFORMATION
+        # -------------------------------------------------
+
+        print("\n" + "=" * 60)
+        print("CLIENT 1 MODEL INFORMATION")
+        print("=" * 60)
+
+        print(
+            f"Client ID               : "
+            f"{CLIENT_ID}"
+        )
+
+        print(
+            f"Local training images   : "
+            f"{self.num_examples:,}"
+        )
+
+        print(
+            f"YOLO label files        : "
+            f"{self.num_labels:,}"
+        )
+
+        print(
+            f"Total model parameters  : "
+            f"{self.total_params:,} "
+            f"({self.total_params / 1_000_000:.2f}M)"
+        )
+
+        print(
+            f"Trainable parameters    : "
+            f"{self.trainable_params:,} "
+            f"({self.trainable_params / 1_000_000:.2f}M)"
+        )
+
+        print(
+            f"Frozen parameters       : "
+            f"{self.frozen_params:,}"
+        )
+
+        print(
+            f"Local epochs / round    : "
+            f"{LOCAL_EPOCHS}"
+        )
+
+        print(
+            f"Image size              : "
+            f"{IMAGE_SIZE}"
+        )
+
+        print(
+            f"Aggregator server       : "
+            f"{SERVER_ADDRESS}"
+        )
+
+        print("=" * 60)
+
+        print("\nClient 1 initialized successfully.")
 
     # =====================================================
     # GET INITIAL MODEL PARAMETERS
@@ -91,12 +275,28 @@ class Client1(fl.client.NumPyClient):
 
     def get_parameters(self, config):
 
-        print("\nCLIENT 1: Sending initial parameters")
+        print("\n" + "=" * 60)
+        print("CLIENT 1: CONNECTED TO AGGREGATOR")
+        print("=" * 60)
 
-        return get_parameters(
-            self.model
+        print(
+            f"Aggregator server: "
+            f"{SERVER_ADDRESS}"
         )
 
+        print(
+            "Successfully connected and "
+            "sending initial model parameters..."
+        )
+
+        print(
+            f"Parameters being sent: "
+            f"{self.total_params:,}"
+        )
+
+        print("=" * 60)
+
+        return get_parameters(self.model)
 
     # =====================================================
     # FEDERATED TRAINING
@@ -105,17 +305,14 @@ class Client1(fl.client.NumPyClient):
     def fit(self, parameters, config):
 
         print("\n" + "=" * 60)
-        print("CLIENT 1: NEW FEDERATED ROUND")
+        print("CLIENT 1: NEW FEDERATED TRAINING ROUND")
         print("=" * 60)
 
         # -------------------------------------------------
-        # STEP 1
-        # Receive global model parameters from aggregator
+        # RECEIVE GLOBAL MODEL
         # -------------------------------------------------
 
-        print(
-            "\n[1] Receiving global model from aggregator..."
-        )
+        print("\n[1] Receiving global model...")
 
         set_parameters(
             self.model,
@@ -124,39 +321,66 @@ class Client1(fl.client.NumPyClient):
 
         print("Global model loaded successfully.")
 
+        # -------------------------------------------------
+        # TRAINING INFORMATION
+        # -------------------------------------------------
 
-        # -------------------------------------------------
-        # STEP 2
-        # Train model on Client 1's LOCAL dataset
-        # -------------------------------------------------
+        print("\n" + "-" * 60)
+        print("LOCAL TRAINING INFORMATION")
+        print("-" * 60)
 
         print(
-            "\n[2] Starting local YOLO training..."
+            f"Client                  : {CLIENT_ID}"
         )
 
+        print(
+            f"Training images         : "
+            f"{self.num_examples:,}"
+        )
+
+        print(
+            f"Trainable parameters    : "
+            f"{self.trainable_params:,}"
+        )
+
+        print(
+            f"Local epochs            : "
+            f"{LOCAL_EPOCHS}"
+        )
+
+        print(
+            f"Image size              : "
+            f"{IMAGE_SIZE}"
+        )
+
+        print("-" * 60)
+
+        # -------------------------------------------------
+        # LOCAL YOLO TRAINING
+        # -------------------------------------------------
+
+        print("\n[2] Starting local YOLO training...")
+
         self.yolo.train(
-            data=DATASET_PATH,
+            data=str(DATASET_PATH),
             epochs=LOCAL_EPOCHS,
             imgsz=IMAGE_SIZE,
 
-            # Output settings
-            project="results",
+            project=str(
+                BASE_DIR / "results"
+            ),
+
             name=f"{CLIENT_ID}_training",
 
             exist_ok=True,
 
-            # Optional settings
             verbose=True
         )
 
-        print(
-            "\nLocal training completed."
-        )
-
+        print("\nLocal training completed.")
 
         # -------------------------------------------------
-        # STEP 3
-        # Extract updated model parameters
+        # UPDATED PARAMETERS
         # -------------------------------------------------
 
         print(
@@ -167,10 +391,15 @@ class Client1(fl.client.NumPyClient):
             self.model
         )
 
+        updated_count = len(updated_parameters)
+
+        print(
+            f"Parameter tensors extracted: "
+            f"{updated_count}"
+        )
 
         # -------------------------------------------------
-        # STEP 4
-        # Generate SHA-256 hash
+        # HASH
         # -------------------------------------------------
 
         print(
@@ -182,23 +411,69 @@ class Client1(fl.client.NumPyClient):
         )
 
         print(
-            f"\nCLIENT 1 MODEL HASH:\n{model_hash}"
+            "\nCLIENT 1 MODEL HASH:"
         )
 
+        print(model_hash)
 
         # -------------------------------------------------
-        # STEP 5
-        # Send update back to aggregator
+        # SEND TO AGGREGATOR
         # -------------------------------------------------
 
         print(
-            "\n[5] Sending updated model to aggregator..."
+            "\n[5] Sending updated model "
+            "parameters to aggregator..."
         )
 
         metrics = {
             "client_id": CLIENT_ID,
-            "model_hash": model_hash
+            "model_hash": model_hash,
+
+            # Dataset information
+            "num_images": self.num_examples,
+            "num_labels": self.num_labels,
+
+            # Model information
+            "total_parameters": self.total_params,
+            "trainable_parameters": self.trainable_params,
+
+            # Training information
+            "local_epochs": LOCAL_EPOCHS
         }
+
+        print(
+            "\n" + "=" * 60
+        )
+
+        print(
+            "CLIENT 1: MODEL UPDATE READY"
+        )
+
+        print(
+            f"Images trained          : "
+            f"{self.num_examples:,}"
+        )
+
+        print(
+            f"Local epochs            : "
+            f"{LOCAL_EPOCHS}"
+        )
+
+        print(
+            f"Trainable parameters    : "
+            f"{self.trainable_params:,}"
+        )
+
+        print(
+            f"Model hash              : "
+            f"{model_hash}"
+        )
+
+        print(
+            "Sending update to aggregator..."
+        )
+
+        print("=" * 60)
 
         return (
             updated_parameters,
@@ -206,32 +481,25 @@ class Client1(fl.client.NumPyClient):
             metrics
         )
 
-
     # =====================================================
-    # MODEL EVALUATION
+    # EVALUATION
     # =====================================================
 
     def evaluate(self, parameters, config):
 
-        print("\nCLIENT 1: Evaluating received global model")
+        print(
+            "\nCLIENT 1: Evaluating global model"
+        )
 
-        # Load global parameters
         set_parameters(
             self.model,
             parameters
         )
 
-        # For now evaluation is handled by the aggregator
-        # using the common VisDrone validation dataset.
-
-        loss = 0.0
-
-        metrics = {}
-
         return (
-            loss,
+            0.0,
             self.num_examples,
-            metrics
+            {}
         )
 
 
@@ -244,6 +512,14 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("STARTING FEDERATED LEARNING CLIENT 1")
     print("=" * 60)
+
+    print(
+        f"\nAttempting connection to aggregator:"
+    )
+
+    print(
+        f"SERVER: {SERVER_ADDRESS}"
+    )
 
     client = Client1()
 
