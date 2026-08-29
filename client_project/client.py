@@ -97,10 +97,11 @@ class Spinner:
             if self._stop.is_set():
                 break
             self._elapsed = time.time() - start
-            print(f"\r  {frame}  {self._label} … ({self._elapsed:.0f}s)",
-                  end="", flush=True)
+            sys.__stdout__.write(f"\r  {frame}  {self._label} … ({self._elapsed:.0f}s)")
+            sys.__stdout__.flush()
             time.sleep(0.1)
-        print(f"\r  ✔  {self._label} done  ({self._elapsed:.1f}s)          ")
+        sys.__stdout__.write(f"\r  ✔  {self._label} done  ({self._elapsed:.1f}s)          \n")
+        sys.__stdout__.flush()
 
     def start(self):
         self._thread.start()
@@ -110,9 +111,11 @@ class Spinner:
         self._stop.set()
         self._thread.join()
         if not success:
-            print(f"\r  ✘  {self._label} failed.                             ")
+            sys.__stdout__.write(f"\r  ✘  {self._label} failed.                             \n")
+            sys.__stdout__.flush()
         elif final_msg:
-            print(f"\r  ✔  {final_msg}          ")
+            sys.__stdout__.write(f"\r  ✔  {final_msg}          \n")
+            sys.__stdout__.flush()
 
     def __enter__(self):
         return self.start()
