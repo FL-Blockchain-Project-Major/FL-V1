@@ -1,36 +1,34 @@
 """
 Federated Learning Client — client.py
 ======================================
-Copy this file (and the security/ + utils/ folders) to each client machine.
-
 Configure via environment variables OR command-line args:
     python client.py --server 10.5.70.249:8080 --id client1 --data data/client1/client1.yaml
     FL_SERVER_ADDRESS=10.5.70.249:8080 FL_CLIENT_ID=client2 python client.py
-
-Required directory layout on each client machine:
-    client_project/
-    ├── client.py              ← this file
-    ├── yolo11n.pt             ← YOLO base model weights
-    ├── security/
-    │   ├── __init__.py
-    │   └── hashing.py
-    ├── utils/
-    │   ├── __init__.py
-    │   └── model_utils.py
-    └── data/
-        └── client<N>/
-            ├── images/        ← training images
-            ├── labels/        ← YOLO-format label files
-            └── client<N>.yaml
 """
 
-import argparse
+# ── Suppress all unnecessary warnings and logs ─────────────────────────────
+import logging
 import os
+import warnings
+
+os.environ.setdefault("FLWR_TELEMETRY_ENABLED", "0")
+warnings.filterwarnings("ignore")
+logging.getLogger("flwr").setLevel(logging.ERROR)
+logging.getLogger("grpc").setLevel(logging.ERROR)
+logging.getLogger("ultralytics").setLevel(logging.ERROR)
+logging.disable(logging.WARNING)
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+import argparse
 import sys
+import threading
 import time
+from itertools import cycle
 from pathlib import Path
 
 import flwr as fl
+from flwr.client import start_client
 from ultralytics import YOLO
 
 from utils.model_utils import get_parameters, set_parameters
@@ -38,53 +36,22 @@ from security.hashing import hash_parameters
 
 
 # =========================================================
-# ARGUMENT PARSING  (env vars → CLI args → defaults)
+# ARGUMENT PARSING
 # =========================================================
 
 def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Federated Learning YOLO Client"
-    )
-    parser.add_argument(
-        "--server",
-        default=os.environ.get("FL_SERVER_ADDRESS", "localhost:8080"),
-        help="Aggregator address  e.g. 10.5.70.249:8080",
-    )
-    parser.add_argument(
-        "--id",
-        default=os.environ.get("FL_CLIENT_ID", "client1"),
-        help="Unique client identifier  e.g. client1 / client2 / client3",
-    )
-    parser.add_argument(
-        "--data",
-        default=os.environ.get(
-            "FL_DATASET_YAML",
-            "data/client1/client1.yaml",
-        ),
-        help="Path to the YOLO dataset YAML for this client",
-    )
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=int(os.environ.get("FL_LOCAL_EPOCHS", "1")),
-        help="Local training epochs per FL round",
-    )
-    parser.add_argument(
-        "--imgsz",
-        type=int,
-        default=int(os.environ.get("FL_IMAGE_SIZE", "640")),
-        help="YOLO image size",
-    )
-    parser.add_argument(
-        "--weights",
-        default=os.environ.get("FL_WEIGHTS", "yolo11n.pt"),
-        help="YOLO model weights file",
-    )
+    parser = argparse.ArgumentParser(description="FL YOLO Client")
+    parser.add_argument("--server",  default=os.environ.get("FL_SERVER_ADDRESS", "localhost:8080"))
+    parser.add_argument("--id",      default=os.environ.get("FL_CLIENT_ID",      "client1"))
+    parser.add_argument("--data",    default=os.environ.get("FL_DATASET_YAML",   "data/client1/client1.yaml"))
+    parser.add_argument("--epochs",  type=int, default=int(os.environ.get("FL_LOCAL_EPOCHS", "1")))
+    parser.add_argument("--imgsz",   type=int, default=int(os.environ.get("FL_IMAGE_SIZE",   "640")))
+    parser.add_argument("--weights", default=os.environ.get("FL_WEIGHTS",         "yolo11n.pt"))
     return parser.parse_args()
 
 
 # =========================================================
-# HELPER UTILITIES
+# HELPERS
 # =========================================================
 
 def _human_bytes(n: int) -> str:
@@ -95,20 +62,59 @@ def _human_bytes(n: int) -> str:
     return f"{n:.1f} TB"
 
 
-def _progress_bar(current: int, total: int, width: int = 40) -> str:
-    filled = int(width * current / total) if total else 0
-    bar    = "█" * filled + "░" * (width - filled)
-    pct    = 100 * current / total if total else 0
-    return f"[{bar}] {pct:.0f}%"
+def _sep(char: str = "═", width: int = 60) -> str:
+    return char * width
 
 
 def count_training_images(data_dir: str) -> int:
-    """Count images in a given directory (jpg/jpeg/png)."""
     image_dir = Path(data_dir)
     total = 0
     for ext in ("*.jpg", "*.jpeg", "*.png"):
         total += len(list(image_dir.glob(ext)))
     return total
+
+
+# =========================================================
+# LIVE SPINNER
+# =========================================================
+
+class Spinner:
+    FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+    def __init__(self, label: str = "Working"):
+        self._label   = label
+        self._stop    = threading.Event()
+        self._thread  = threading.Thread(target=self._spin, daemon=True)
+        self._elapsed = 0.0
+
+    def _spin(self):
+        start = time.time()
+        for frame in cycle(self.FRAMES):
+            if self._stop.is_set():
+                break
+            self._elapsed = time.time() - start
+            print(f"\r  {frame}  {self._label} … ({self._elapsed:.0f}s)",
+                  end="", flush=True)
+            time.sleep(0.1)
+        print(f"\r  ✔  {self._label} done  ({self._elapsed:.1f}s)          ")
+
+    def start(self):
+        self._thread.start()
+        return self
+
+    def stop(self, success: bool = True, final_msg: str = ""):
+        self._stop.set()
+        self._thread.join()
+        if not success:
+            print(f"\r  ✘  {self._label} failed.                             ")
+        elif final_msg:
+            print(f"\r  ✔  {final_msg}          ")
+
+    def __enter__(self):
+        return self.start()
+
+    def __exit__(self, *_):
+        self.stop()
 
 
 # =========================================================
@@ -122,122 +128,114 @@ class FLClient(fl.client.NumPyClient):
         self.client_id   = args.id
         self.server_addr = args.server
 
-        print("\n" + "=" * 60)
-        print(f"  FEDERATED LEARNING CLIENT  —  {self.client_id.upper()}")
-        print("=" * 60)
-        print(f"  Server   : {self.server_addr}")
-        print(f"  Dataset  : {args.data}")
-        print(f"  Epochs   : {args.epochs} per round")
-        print(f"  Img size : {args.imgsz}")
-        print(f"  Weights  : {args.weights}")
-
-        # ----- Validate dataset YAML exists -----
+        # ── Validate dataset YAML ───────────────────────────────────────
         if not Path(args.data).exists():
-            print(f"\n  ✘  Dataset YAML not found: {args.data}")
-            print(f"     Make sure you ran the annotation converter first.")
+            print(f"  ✘  Dataset YAML not found: {args.data}")
             sys.exit(1)
 
-        # ----- Load YOLO model -----
-        print(f"\n  ► Loading YOLO model from {args.weights}…")
         if not Path(args.weights).exists():
             print(f"  ✘  Weights file not found: {args.weights}")
             sys.exit(1)
 
-        self.yolo  = YOLO(args.weights)
+        # ── Load YOLO model (suppress YOLO's own stdout) ────────────────
+        self.yolo  = YOLO(args.weights, verbose=False)
         self.model = self.yolo.model
 
-        # ----- Count images -----
-        yaml_dir    = str(Path(args.data).parent / "images")
+        # ── Count training images ───────────────────────────────────────
+        yaml_dir          = str(Path(args.data).parent / "images")
         self.num_examples = count_training_images(yaml_dir)
 
-        print(f"  Training images  : {self.num_examples:,}")
-        print(f"\n  ✔  {self.client_id} ready. Connecting to {self.server_addr}…")
-        print("=" * 60)
+        # ── Print clean startup banner ──────────────────────────────────
+        print("\n" + _sep())
+        print(f"  FL CLIENT  —  {self.client_id.upper()}")
+        print(_sep("─"))
+        print(f"  Server   : {self.server_addr}")
+        print(f"  Dataset  : {args.data}")
+        print(f"  Images   : {self.num_examples:,}")
+        print(f"  Epochs   : {args.epochs} / round   |  Img size : {args.imgsz}")
+        print(_sep())
+        print(f"  ✔  Ready — connecting independently (no waiting for other clients)")
+        print(_sep() + "\n")
 
-    # ------------------------------------------------------------------
-    # STEP 0 — Send initial parameters to server (called once at start)
-    # ------------------------------------------------------------------
+    # ── Send initial parameters to server ──────────────────────────────
     def get_parameters(self, config):
-        print(f"\n  [{self.client_id}] Sending initial model parameters to server…")
         params  = get_parameters(self.model)
         payload = sum(a.nbytes for a in params)
-        print(f"  ► Payload: {_human_bytes(payload)}")
+        print(f"  [{self.client_id}] ► Sending initial params to server  "
+              f"({_human_bytes(payload)})")
         return params
 
-    # ------------------------------------------------------------------
-    # STEP 1-5 — Core FL round
-    # ------------------------------------------------------------------
+    # ── Core FL round ───────────────────────────────────────────────────
     def fit(self, parameters, config):
-        server_round = int(config.get("server_round", "?"))
+        server_round = int(config.get("server_round", 0))
 
-        print(f"\n{'='*60}")
+        print(f"\n{_sep()}")
         print(f"  [{self.client_id}]  ROUND {server_round}  —  FIT")
-        print(f"{'='*60}")
+        print(_sep("─"))
 
-        # ── 1. Load global model from server ──
-        print(f"\n  [1/5] Receiving global model from aggregator…")
+        # 1. Load global model
         t0 = time.time()
         set_parameters(self.model, parameters)
         payload_in = sum(a.nbytes for a in parameters)
-        print(f"       ✔  Received  ({_human_bytes(payload_in)}, {time.time()-t0:.2f}s)")
+        print(f"  [1/5] Global model received  "
+              f"({_human_bytes(payload_in)}, {time.time()-t0:.2f}s)")
 
-        # ── 2. Train locally ──
-        print(f"\n  [2/5] Starting local YOLO training…")
-        print(f"       Dataset : {self.args.data}")
-        print(f"       Epochs  : {self.args.epochs}")
-        print(f"       Images  : {self.num_examples:,}")
+        # 2. Local training
+        print(f"  [2/5] Local training  "
+              f"({self.num_examples:,} images × {self.args.epochs} epoch(s))…")
         t1 = time.time()
 
-        self.yolo.train(
-            data=self.args.data,
-            epochs=self.args.epochs,
-            imgsz=self.args.imgsz,
-            project="results",
-            name=f"{self.client_id}_round{server_round}",
-            exist_ok=True,
-            verbose=False,   # suppress YOLO verbosity; our wrapper shows progress
-        )
+        spinner = Spinner(f"Training  [{self.client_id}]").start()
+        try:
+            self.yolo.train(
+                data=self.args.data,
+                epochs=self.args.epochs,
+                imgsz=self.args.imgsz,
+                project="results",
+                name=f"{self.client_id}_round{server_round}",
+                exist_ok=True,
+                verbose=False,
+            )
+        finally:
+            spinner.stop()
 
         train_time = time.time() - t1
-        print(f"\n       ✔  Local training complete ({train_time:.1f}s)")
+        print(f"  [2/5] ✔  Training complete  ({train_time:.1f}s)")
 
-        # ── 3. Extract updated parameters ──
-        print(f"\n  [3/5] Extracting updated model parameters…")
+        # 3. Extract updated parameters
         updated_params = get_parameters(self.model)
         payload_out    = sum(a.nbytes for a in updated_params)
-        n_tensors      = len(updated_params)
-        print(f"       Tensors  : {n_tensors:,}")
-        print(f"       Payload  : {_human_bytes(payload_out)}")
+        print(f"  [3/5] Params extracted  "
+              f"({len(updated_params):,} tensors  {_human_bytes(payload_out)})")
 
-        # ── 4. Compute SHA-256 hash ──
-        print(f"\n  [4/5] Computing SHA-256 integrity hash…")
+        # 4. SHA-256 hash
         t2 = time.time()
         model_hash = hash_parameters(updated_params)
-        print(f"       Hash     : {model_hash[:32]}… ({time.time()-t2:.2f}s)")
+        print(f"  [4/5] Hash : {model_hash[:32]}…  ({time.time()-t2:.2f}s)")
 
-        # ── 5. Send back to aggregator ──
-        print(f"\n  [5/5] Sending update to aggregator…")
-        print(f"       Payload  : {_human_bytes(payload_out)}")
-
+        # 5. Send to aggregator
         metrics = {
             "client_id":    self.client_id,
             "model_hash":   model_hash,
             "train_time_s": round(train_time, 2),
             "num_images":   self.num_examples,
         }
+        print(f"  [5/5] Sending update to aggregator  ({_human_bytes(payload_out)})")
+        print(_sep("─"))
+        print(f"  [{self.client_id}] Round {server_round} complete  |  "
+              f"images={self.num_examples:,}  time={train_time:.0f}s")
+        print(f"  ✔  Task complete. Client will auto-disconnect.")
+        print(_sep() + "\n")
 
-        print(f"       ✔  Update ready for transmission")
-        print(f"{'─'*60}")
-        print(f"  Round {server_round} complete  |  "
-              f"samples={self.num_examples:,}  |  "
-              f"time={train_time:.0f}s")
-        print(f"{'='*60}\n")
+        # Schedule auto-shutdown so the client stops after sending data
+        def auto_shutdown():
+            time.sleep(2)
+            os._exit(0)
+        threading.Thread(target=auto_shutdown, daemon=True).start()
 
         return (updated_params, self.num_examples, metrics)
 
-    # ------------------------------------------------------------------
-    # EVALUATE (minimal stub — server handles real evaluation)
-    # ------------------------------------------------------------------
+    # ── Evaluate stub ───────────────────────────────────────────────────
     def evaluate(self, parameters, config):
         set_parameters(self.model, parameters)
         return 0.0, self.num_examples, {"client_id": self.client_id}
@@ -251,9 +249,9 @@ if __name__ == "__main__":
     args   = parse_args()
     client = FLClient(args)
 
-    print(f"\n  Connecting to aggregator at {args.server}…\n")
+    print(f"  Connecting to aggregator at {args.server}…\n")
 
-    fl.client.start_numpy_client(
+    start_client(
         server_address=args.server,
-        client=client,
+        client=client.to_client(),
     )

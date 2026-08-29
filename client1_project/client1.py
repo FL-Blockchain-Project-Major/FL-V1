@@ -4,6 +4,9 @@ from pathlib import Path
 
 from utils.model_utils import get_parameters, set_parameters
 from security.hashing import hash_parameters
+import threading
+import time
+import os
 
 
 # =========================================================
@@ -472,8 +475,15 @@ class Client1(fl.client.NumPyClient):
         print(
             "Sending update to aggregator..."
         )
+        print("✔  Task complete. Client will auto-disconnect.")
 
         print("=" * 60)
+
+        # Schedule auto-shutdown so the client stops after sending data
+        def auto_shutdown():
+            time.sleep(2)
+            os._exit(0)
+        threading.Thread(target=auto_shutdown, daemon=True).start()
 
         return (
             updated_parameters,
