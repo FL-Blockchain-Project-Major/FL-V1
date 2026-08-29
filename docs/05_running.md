@@ -8,49 +8,38 @@ This guide covers how to start the aggregator and clients, connect them, and mon
 
 ## Overview
 
-```
-1. Start the aggregator (server)   ← listens, does NOT block on client count
-2. Start any client whenever ready ← each client is fully independent
-3. Training begins as soon as a client submits an update
-4. Other clients can connect/send updates at any time
+```text
+1. Start the aggregator (server).
+2. Start any client whenever ready.
+3. Training begins as soon as a client connects.
+4. The client automatically shuts down when finished.
+5. The server automatically shuts down when all expected clients have submitted.
 ```
 
-> **Key change:** Clients are now **fully independent**. The server does not wait
-> for all clients before starting. Any client can send its update at any time,
-> and aggregation happens immediately after each submission.
+**Key behavior:** Clients are **fully independent**. The server does not wait for all clients to connect before starting. Any client can send its update at any time.
 
 ---
 
-## Part 1 — Configuring the Number of Clients
+## Part 1 — Start the Aggregator
 
-Open `aggregator/server.py` and change the **single constant** at the top:
+On the **server machine**, ensure your virtual environment is active, then run:
 
-```python
-# ── Change this to match your number of clients ──
-NUM_CLIENTS = 3   # ← set to 1, 2, 3, or more
-```
-
-This is informational (shown in the banner). The server will accept updates
-from any number of clients independently regardless of this value.
-
----
-
-## Part 2 — Start the Aggregator
-
-On the **server machine**, with the venv active:
-
+**Linux / macOS:**
 ```bash
-cd /home/sayam/Desktop/FL-V1
-source .venv/bin/activate
+python3 -m aggregator.server
+```
+
+**Windows:**
+```powershell
 python -m aggregator.server
 ```
 
-You will see:
-```
-════════════════════════════════════════════════════════════════════════
+You will see a pristine UI:
+```text
+════════════════════════════════════════════════════════════════════
   FEDERATED LEARNING AGGREGATOR  —  VisDrone / YOLO11n
-════════════════════════════════════════════════════════════════════════
-  Session ID      : 20260829_221720
+════════════════════════════════════════════════════════════════════
+  Session ID      : 20260830_002925
   Server address  : 0.0.0.0:8080
   FL rounds       : 3
   Expected clients: 3  (clients act independently)
@@ -60,116 +49,55 @@ You will see:
     Training begins as soon as any client sends an update.
 
   Waiting for client(s) to connect on 0.0.0.0:8080…
-════════════════════════════════════════════════════════════════════════
-```
-
-### Custom Settings (Optional)
-
-```bash
-FL_SERVER_ADDRESS=0.0.0.0:9000 \
-FL_NUM_ROUNDS=5                \
-FL_NUM_CLIENTS=5               \
-python -m aggregator.server
+════════════════════════════════════════════════════════════════════
 ```
 
 ---
 
-## Part 3 — Start Each Client
+## Part 2 — Start the Clients
 
-On **each client machine**, with the venv active. Run from inside `client_project/`.
+On **each client machine** (or separate terminal), activate the virtual environment and run the client script. Provide the Server IP, a unique ID, and the path to the YAML data config.
 
-### Client 1:
+*(Replace `192.168.1.5:8080` with your actual server IP address)*
+
+**Client 1:**
 ```bash
-cd ~/client_project
-source .venv/bin/activate
-python client.py \
-    --server 10.5.70.249:8080 \
-    --id     client1          \
-    --data   data/client1/client1.yaml
+python client.py --server 192.168.1.5:8080 --id client1 --data data/client1/client1.yaml
 ```
 
-### Client 2:
+**Client 2:**
 ```bash
-python client.py \
-    --server 10.5.70.249:8080 \
-    --id     client2          \
-    --data   data/client2/client2.yaml
+python client.py --server 192.168.1.5:8080 --id client2 --data data/client2/client2.yaml
 ```
 
-### Client 3:
-```bash
-python client.py \
-    --server 10.5.70.249:8080 \
-    --id     client3          \
-    --data   data/client3/client3.yaml
-```
+You will see:
+```text
+════════════════════════════════════════════════════════════
+  FL CLIENT  —  CLIENT1
+────────────────────────────────────────────────────────────
+  Server   : 192.168.1.5:8080
+  Dataset  : data/client1/client1.yaml
+  Images   : 100
+  Epochs   : 1 / round   |  Img size : 640
+════════════════════════════════════════════════════════════
+  ✔  Ready — connecting independently (no waiting for other clients)
+════════════════════════════════════════════════════════════
 
-> Replace `10.5.70.249` with your actual server IP.
-> To find it: run `hostname -I | awk '{print $1}'` on the server machine.
-
-### Using Environment Variables:
-```bash
-FL_SERVER_ADDRESS=10.5.70.249:8080 \
-FL_CLIENT_ID=client1               \
-FL_DATASET_YAML=data/client1/client1.yaml \
-python client.py
+  Connecting to aggregator at 192.168.1.5:8080…
 ```
 
 ---
 
-## Part 4 — What Happens
+## Part 3 — What Happens Next
 
-Clients are **fully independent**. You do NOT need to start them all at once.
+Clients do not need to be started at the same time. The flow looks like this:
 
-```
-T=0s    Aggregator starts, waiting for connections
-
-T=10s   Client 1 connects → immediately starts Round 1
-        [client1] Training on 2157 images × 1 epoch…
-
-T=45s   Client 1 finishes → sends update → aggregation happens
-        ✔  client1: ACCEPTED | hash verified | FedAvg complete
-
-T=90s   Client 2 connects (can be any time after client 1)
-        [client2] Training on 2157 images × 1 epoch…
-
-T=135s  Client 2 finishes → sends update → aggregation happens
-        ✔  client2: ACCEPTED | hash verified | FedAvg complete
-
-        (Client 3 can arrive whenever it's ready — no deadline)
-```
-
-> Each client triggers its own independent aggregation cycle.
-> No client needs to wait for another to be running.
-
----
-
-## Part 5 — Stopping the System
-
-### Stop the aggregator:
-Press `Ctrl + C` in the aggregator terminal.
-
-If the port is stuck (from a previous run):
-```bash
-fuser -k 8080/tcp
-```
-
-### Stop a client:
-Press `Ctrl + C` in the client's terminal.
-
----
-
-## Part 6 — Restarting After a Failed Run
-
-**On the server:**
-```bash
-fuser -k 8080/tcp
-sleep 1
-python -m aggregator.server
-```
-
-**On the clients:**
-Simply run the `python client.py ...` command again.
+1. **Client connects:** The server immediately sends the global weights.
+2. **Local Training:** The client trains silently (TQDM progress bars are suppressed for a clean terminal). The server displays `Waiting for client(s) to train`.
+3. **Data Transmission:** The client extracts weights, computes a SHA-256 hash, and sends the payload back to the server.
+4. **Auto-Shutdown (Client):** The client logs `✔ Task complete. Client will auto-disconnect` and terminates automatically.
+5. **Aggregation:** The server accepts the hash, performs FedAvg, logs the metrics, and increments its completed client counter.
+6. **Auto-Shutdown (Server):** Once all expected clients have submitted, the server logs `🎉 ALL 3 CLIENT(S) HAVE SUCCESSFULLY COMPLETED TRAINING` and terminates automatically.
 
 ---
 
@@ -177,11 +105,9 @@ Simply run the `python client.py ...` command again.
 
 | Output | Location |
 |--------|----------|
-| Per-round JSON logs | `aggregator/logs/session_<ID>_round_<N>.json` |
+| Central Aggregation Log | `aggregator/logs/session_<ID>.json` |
 | YOLO training metrics | `client_project/results/<client_id>_round<N>/` |
-| YOLO training weights | `client_project/results/<client_id>_round<N>/weights/` |
-
-For details on reading logs and progress output, see [07 — Progress & Logs](./07_progress_and_logs.md).
+| Local client weights | `client_project/results/<client_id>_round<N>/weights/` |
 
 ---
 

@@ -13,6 +13,9 @@ Override defaults with environment variables:
 import logging
 import os
 import warnings
+from dotenv import load_dotenv
+
+load_dotenv(".env.local")
 
 os.environ.setdefault("FLWR_TELEMETRY_ENABLED", "0")
 warnings.filterwarnings("ignore")
@@ -167,7 +170,7 @@ class SecureFedAvg(fl.server.strategy.FedAvg):
         self._round_start = time.time()
 
         self._fit_spinner = Spinner(
-            f"Round {server_round}/{NUM_ROUNDS} — waiting for client(s) to train"
+            f"Waiting for client(s) to train"
         )
         self._fit_spinner.start()
 
@@ -179,7 +182,7 @@ class SecureFedAvg(fl.server.strategy.FedAvg):
 
         if self._fit_spinner is not None:
             self._fit_spinner.stop(
-                final_msg=f"Round {server_round} — {len(results)} client(s) responded in {elapsed:.1f}s"
+                final_msg=f"Client(s) responded in {elapsed:.1f}s"
             )
             self._fit_spinner = None
 
@@ -307,10 +310,22 @@ class SecureFedAvg(fl.server.strategy.FedAvg):
         return super().aggregate_evaluate(server_round, results, failures)
 
     def _save_round_log(self, round_log: dict):
-        filename = LOG_DIR / f"session_{SESSION_ID}_round_{round_log['round']}.json"
+        filename = LOG_DIR / f"session_{SESSION_ID}.json"
+        
+        if filename.exists():
+            with open(filename, "r", encoding="utf-8") as f:
+                try:
+                    data = json.load(f)
+                except json.JSONDecodeError:
+                    data = {"session_id": SESSION_ID, "rounds": []}
+        else:
+            data = {"session_id": SESSION_ID, "rounds": []}
+            
+        data["rounds"].append(round_log)
+        
         with open(filename, "w", encoding="utf-8") as f:
-            json.dump(round_log, f, indent=4)
-        print(f"  📄  Log → {filename}")
+            json.dump(data, f, indent=4)
+        print(f"  📄  Log updated → {filename.name}")
 
 
 # =========================================================

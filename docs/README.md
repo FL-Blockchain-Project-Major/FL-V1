@@ -1,45 +1,27 @@
-# FL-V1 Documentation Index
+# Federated Learning with YOLO & Flower
 
-Welcome to the **Federated Learning — VisDrone / YOLO11n** project documentation.
+A streamlined, cross-platform Federated Learning (FL) system using [Flower](https://flower.ai/) and [YOLOv11](https://github.com/ultralytics/ultralytics) for object detection.
 
----
+This project enables multiple independent clients to collaboratively train a global YOLO model without ever sharing their raw image data.
 
-## 📚 Documentation Files
+## Features
 
-| # | File | Contents |
-|---|------|----------|
-| 1 | [01_project_overview.md](./01_project_overview.md) | What this project is, architecture, tech stack, how FL works |
-| 2 | [02_project_structure.md](./02_project_structure.md) | Directory layout, what every file does |
-| 3 | [03_setup_server.md](./03_setup_server.md) | Setting up the aggregator / server machine |
-| 4 | [04_setup_clients.md](./04_setup_clients.md) | Setting up each of the 3 client machines |
-| 5 | [05_running.md](./05_running.md) | How to start the server and clients, connect them |
-| 6 | [06_configuration.md](./06_configuration.md) | All environment variables, CLI flags, YAML options |
-| 7 | [07_progress_and_logs.md](./07_progress_and_logs.md) | Understanding terminal output, progress bars, round logs |
-| 8 | [08_troubleshooting.md](./08_troubleshooting.md) | Common errors and how to fix them |
+- **Cross-Platform:** Works seamlessly on Windows, macOS, and Linux.
+- **Independent Clients:** Clients connect at any time, perform local training, send updates to the server, and automatically shut down. 
+- **Auto-Shutdown Server:** The server automatically tracks how many updates it has received. Once the expected number of clients submit their data, it aggregates the final global model and shuts down.
+- **Centralized Logging:** The server outputs a single, clean JSON log file summarizing the performance, hashes, and timing of all clients in the session.
+- **Integrity Verification:** Uses SHA-256 hashing to ensure models sent over the network haven't been tampered with.
+- **Clean Terminal UI:** Muted unnecessary YOLO progress bars, providing a pristine command-line interface.
 
----
+## Documentation Index
 
-## Quick-Start (TL;DR)
+Read the documentation in the following order to understand and deploy the project:
 
-**Server machine:**
-```bash
-git clone <repo-url> && cd FL-V1
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python split_database.py          # split dataset → 3 client shards
-python -m aggregator.server       # start and wait for clients
-```
-
-**Each client machine:**
-```bash
-# copy client_project/ + data/clientN/ from server
-cd client_project
-python -m venv .venv && source .venv/bin/activate
-pip install flwr ultralytics torch torchvision numpy Pillow tqdm
-python convert_annotations.py --client clientN
-python client.py --server <SERVER_IP>:8080 --id clientN --data data/clientN/clientN.yaml
-```
-
----
-
-> For the full step-by-step walkthrough start with [01_project_overview.md](./01_project_overview.md).
+1. [Project Overview](./01_project_overview.md)
+2. [Project Structure](./02_project_structure.md)
+3. [Server Setup](./03_setup_server.md)
+4. [Client Setup](./04_setup_clients.md)
+5. [Running the System](./05_running.md)
+6. [Configuration Guide](./06_configuration.md)
+7. [Progress & Logs](./07_progress_and_logs.md)
+8. [Troubleshooting](./08_troubleshooting.md)

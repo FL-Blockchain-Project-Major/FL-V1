@@ -1,15 +1,18 @@
 """
 Federated Learning Client — client.py
 ======================================
-Configure via environment variables OR command-line args:
-    python client.py --server 10.5.70.249:8080 --id client1 --data data/client1/client1.yaml
-    FL_SERVER_ADDRESS=10.5.70.249:8080 FL_CLIENT_ID=client2 python client.py
+Configure via environment variables (.env.local) OR command-line args:
+    python client.py --server <SERVER_IP>:8080 --id client1 --data data/client1/client1.yaml
+    FL_SERVER_ADDRESS=<SERVER_IP>:8080 FL_CLIENT_ID=client2 python client.py
 """
 
 # ── Suppress all unnecessary warnings and logs ─────────────────────────────
 import logging
 import os
 import warnings
+from dotenv import load_dotenv
+
+load_dotenv(".env.local")
 
 os.environ.setdefault("FLWR_TELEMETRY_ENABLED", "0")
 warnings.filterwarnings("ignore")
@@ -24,6 +27,7 @@ import argparse
 import sys
 import threading
 import time
+import contextlib
 from itertools import cycle
 from pathlib import Path
 
@@ -187,15 +191,16 @@ class FLClient(fl.client.NumPyClient):
 
         spinner = Spinner(f"Training  [{self.client_id}]").start()
         try:
-            self.yolo.train(
-                data=self.args.data,
-                epochs=self.args.epochs,
-                imgsz=self.args.imgsz,
-                project="results",
-                name=f"{self.client_id}_round{server_round}",
-                exist_ok=True,
-                verbose=False,
-            )
+            with open(os.devnull, 'w') as f, contextlib.redirect_stdout(f), contextlib.redirect_stderr(f):
+                self.yolo.train(
+                    data=self.args.data,
+                    epochs=self.args.epochs,
+                    imgsz=self.args.imgsz,
+                    project="results",
+                    name=f"{self.client_id}_round{server_round}",
+                    exist_ok=True,
+                    verbose=False,
+                )
         finally:
             spinner.stop()
 

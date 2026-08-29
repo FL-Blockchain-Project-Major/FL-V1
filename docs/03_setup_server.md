@@ -1,185 +1,68 @@
-# 03 — Server / Aggregator Setup
+# 03 — Server Setup
 
-This guide walks through setting up the **aggregator machine** — the central server that coordinates all federated learning rounds. Run these steps **only on the server machine**.
+This guide shows you how to set up the central Aggregator Server. The steps are provided for Windows, Linux, and macOS.
 
----
+## 1. Prerequisites
 
-## Prerequisites
+- Python 3.9, 3.10, or 3.11 installed on your system.
+- Network access (Port 8080 open if clients are on different machines).
 
-- Linux (Ubuntu 20.04+ recommended) or macOS
-- Python 3.9 or higher
-- `git` installed
-- At least 4 GB free disk space (for dependencies + dataset shards)
-- Connected to the same LAN as the client machines
+## 2. Create a Virtual Environment
 
----
+Open a terminal (or Command Prompt / PowerShell on Windows) and navigate to the project root (`FL-V1`).
 
-## Step 1 — Clone the Repository
-
+**Linux / macOS:**
 ```bash
-git clone <your-repo-url>
-cd FL-V1
-```
-
-If you don't have Git set up, you can copy the project folder to the machine directly.
-
----
-
-## Step 2 — Create a Virtual Environment
-
-Using a virtual environment isolates dependencies from your system Python.
-
-```bash
+cd /path/to/FL-V1
 python3 -m venv .venv
-```
-
-Activate it:
-
-```bash
 source .venv/bin/activate
 ```
 
-Your shell prompt should now show `(.venv)` at the start. You must have the venv active whenever you run any project commands.
-
-To deactivate later:
-```bash
-deactivate
+**Windows:**
+```powershell
+cd C:\path\to\FL-V1
+python -m venv .venv
+.venv\Scripts\activate
 ```
 
----
+## 3. Install Dependencies
 
-## Step 3 — Install Dependencies
+With the virtual environment active, install the required packages:
 
 ```bash
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-This installs:
-- `flwr` — Flower federated learning framework
-- `ultralytics` — YOLO11n model
-- `torch` + `torchvision` — PyTorch deep learning backend
-- `numpy`, `Pillow`, `tqdm`, `opencv-python` — data utilities
+> **Note:** The `requirements.txt` includes `flwr`, `ultralytics`, and `torch`. 
 
-> **Note:** PyTorch with CUDA support (~500 MB) will be downloaded automatically. This may take several minutes depending on your internet speed.
+## 4. Verify Server Configuration
 
----
+Open `aggregator/server.py` in a text editor and ensure the `NUM_CLIENTS` constant is set to the number of clients you intend to test with.
 
-## Step 4 — Prepare the Dataset
-
-### 4a. Obtain the VisDrone Training Dataset
-
-The raw training set should be placed at:
-```
-FL-V1/VisDrone2019-DET-train/
-├── images/       ← 6,471 JPEG images
-└── annotations/  ← matching .txt files
+```python
+# ── Change this single constant to match your number of clients ──
+NUM_CLIENTS = 3
 ```
 
-If you don't have it, download it:
+By default, the server binds to `0.0.0.0:8080`, meaning it will accept connections from any IP address on port 8080.
+
+## 5. Get Your IP Address
+
+If your clients are on different computers, they need to know the Server's IP address.
+
+**Linux / macOS:**
 ```bash
-# Manual download from VisDrone GitHub releases
-wget https://github.com/ultralytics/yolov5/releases/download/v1.0/VisDrone2019-DET-train.zip
-unzip VisDrone2019-DET-train.zip
+hostname -I
+# OR
+ipconfig getifaddr en0
 ```
 
-Or using Ultralytics auto-download (requires the full YOLO pipeline):
-```bash
-python -c "from ultralytics import YOLO; YOLO('yolo11n.pt').train(data='VisDrone.yaml', epochs=0)"
+**Windows:**
+```powershell
+ipconfig
 ```
-
-### 4b. Split the Dataset into 3 Client Shards
-
-Run the splitting script once:
-```bash
-python split_database.py
-```
-
-Expected output:
-```
-Splitting VisDrone dataset into 3 client shards...
-Total images found: 6471
-Client 1: 2157 images → clients/client1/
-Client 2: 2157 images → clients/client2/
-Client 3: 2157 images → clients/client3/
-Done.
-```
-
-This creates:
-```
-clients/
-├── client1/
-│   ├── images/       ← ~2157 images
-│   └── annotations/  ← matching annotation files
-├── client2/
-│   ├── images/
-│   └── annotations/
-└── client3/
-    ├── images/
-    └── annotations/
-```
-
-> You only need to run `split_database.py` **once**. After that the shards are ready to be transferred to client machines.
-
----
-
-## Step 5 — Find Your Server's LAN IP Address
-
-Run:
-```bash
-hostname -I | awk '{print $1}'
-```
-
-Example output:
-```
-10.5.70.249
-```
-
-**Write this IP down.** You will give it to all 3 client machines so they can connect.
-
----
-
-## Step 6 — (Optional) Open Firewall Port
-
-If your machine uses a firewall, allow inbound connections on port 8080:
-
-```bash
-# UFW (Ubuntu)
-sudo ufw allow 8080/tcp
-sudo ufw reload
-
-# firewalld (RHEL/Fedora)
-sudo firewall-cmd --permanent --add-port=8080/tcp
-sudo firewall-cmd --reload
-
-# iptables (manual)
-sudo iptables -A INPUT -p tcp --dport 8080 -j ACCEPT
-```
-
-If `ufw` is not active, you can skip this step.
-
----
-
-## Step 7 — Verify the Setup
-
-Run a quick import check to confirm everything is installed correctly:
-
-```bash
-python -c "import flwr; import ultralytics; import torch; print('All dependencies OK')"
-```
-
-Expected output:
-```
-All dependencies OK
-```
-
----
-
-## Server is Ready
-
-Your aggregator machine is now fully set up. To **start the server**, see [05 — Running](./05_running.md).
-
-To configure the server (number of rounds, port, minimum clients), see [06 — Configuration](./06_configuration.md).
+Look for the `IPv4 Address` under your active Wi-Fi or Ethernet adapter (e.g., `192.168.1.5`).
 
 ---
 
