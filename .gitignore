@@ -54,3 +54,7 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+client3_project/data/client3/images/
+client3_project/data/client3/labels/
+client3_project/data/client3/annotations/
+client3_project/data/client3/labels.cache
