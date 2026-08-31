@@ -1,51 +1,46 @@
 # 06 — Configuration
 
-You can customize the behavior of the Server and the Clients easily without modifying the Python source code. You can use **Environment Variables** or **Command-Line Arguments**.
+The client and server can be configured through environment variables or command-line arguments.
 
-## Server Configuration
+## Server configuration
 
-Open `aggregator/server.py` and modify the `NUM_CLIENTS` constant at the top of the file to change the total expected number of clients before the server auto-shuts down.
+The server uses these environment variables:
 
-```python
-NUM_CLIENTS = 3 
-```
+| Variable | Default | Description |
+|---|---|---|
+| `FL_NUM_CLIENTS` | `3` | Total valid uploads required before shutdown |
+| `FL_UPLOAD_PORT` | `8090` | HTTP port used by the aggregator |
 
-You can also override settings via environment variables when launching the server:
+Example:
 
-**Linux / macOS:**
 ```bash
-FL_NUM_CLIENTS=5 FL_SERVER_ADDRESS=0.0.0.0:9000 python3 -m aggregator.server
+FL_NUM_CLIENTS=2 FL_UPLOAD_PORT=8090 python -m aggregator.server
 ```
 
-**Windows (PowerShell):**
-```powershell
-$env:FL_NUM_CLIENTS="5"; $env:FL_SERVER_ADDRESS="0.0.0.0:9000"; python -m aggregator.server
-```
+## Client configuration
 
-## Client Configuration
-
-Clients use command-line arguments for configuration.
-
-### Available Arguments
+The main client script supports the following arguments:
 
 | Argument | Default | Description |
 |---|---|---|
-| `--server` | `localhost:8090` | IP and port of the aggregator |
-| `--id` | `client1` | Unique ID for the client (used for logging) |
-| `--data` | `data/client1/client1.yaml` | Path to the YAML dataset file |
-| `--epochs` | `1` | Number of YOLO training epochs |
-| `--imgsz` | `640` | Image size for YOLO |
-| `--weights` | `yolo11n.pt` | Path to the initial YOLO weights |
+| `--train` | off | Train locally before uploading |
+| `--connect` | off | Upload an existing trained model without retraining |
+| `--model` | none | Path to a local `.pt` file used with `--connect` |
+| `--server` | `localhost:8090` | Aggregator host and port |
+| `--id` | `client1` | Client name used in logs |
+| `--data` | `data/client1/client1.yaml` | Dataset YAML config |
+| `--epochs` | `1` | Local YOLO epochs |
+| `--imgsz` | `640` | YOLO image size |
+| `--weights` | `yolo11n.pt` | Initial weights file |
 
-### Example Client Command
+### Examples
 
 ```bash
-python client.py \
-    --server 192.168.1.5:8090 \
-    --id my_custom_client \
-    --data data/custom/dataset.yaml \
-    --epochs 5 \
-    --imgsz 320
+python client_project/client.py --train --server 192.168.1.5:8090 --id client1 --data client_project/data/client1/client1.yaml
+```
+
+```bash
+python client_project/client.py --connect --server 192.168.1.5:8090 --id client1 --data client_project/data/client1/client1.yaml --model client_project/results/client1_training/weights/best.pt
 ```
 
 ---

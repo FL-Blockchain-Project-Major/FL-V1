@@ -1,37 +1,36 @@
 # 01 — Project Overview
 
-## What is Federated Learning?
+## What this project does
 
-Federated Learning (FL) is a machine learning approach where a **central aggregator** (the server) manages a global model, and multiple **edge devices** (the clients) train that model on their own local data. 
+This project is a lightweight federated-learning-style setup for training a YOLO object-detection model on distributed data without moving raw image files to a central location.
 
-Instead of sending raw images to the central server (which can be a massive privacy risk and consume huge bandwidth), clients only send the **updated model weights** back to the server. The server then averages these weights and creates an improved global model.
+Each client keeps its own local dataset, trains a YOLO model locally, and then uploads the trained `.pt` file to a central HTTP aggregator. The aggregator verifies the SHA-256 hash, saves the accepted model, and waits until the expected number of valid clients have submitted their files.
 
-## How This Project Works
+## How the workflow works
 
-This project trains a YOLOv11 Nano model using the VisDrone dataset across distributed clients. 
+### 1. Aggregator (server)
+- Starts as an HTTP upload server on a configured port (default: `8090`).
+- Exposes an upload endpoint at `/upload`.
+- Receives model files from clients with metadata such as `client_id`, `epochs`, `num_examples`, and `model_hash`.
+- Verifies the hash for integrity.
+- Saves the accepted file under `aggregator/received_models/`.
+- Automatically shuts down after all expected uploads have succeeded.
 
-### Core Mechanics
-1. **Aggregator (Server):** 
-   - Starts up and waits for clients to connect.
-   - Accepts incoming connections at any time (asynchronous).
-   - Tracks the number of successfully accepted updates.
-   - Merges client updates via the **Federated Averaging (FedAvg)** strategy.
-   - Automatically shuts down once it receives updates from all expected clients.
-   - Creates a single `session_<ID>.json` log containing all metrics.
+### 2. Client nodes
+- Run independently on different machines or terminal windows.
+- Option A: `--train` trains locally and automatically uploads the result.
+- Option B: `--connect` uploads a model that has already been trained and saved on disk.
+- Computes a SHA-256 hash for the model before uploading.
+- Exits automatically after a successful upload.
 
-2. **Client Nodes:**
-   - Run independently on different machines (or different terminal windows).
-   - Download the global model from the server.
-   - Train the model on their private portion of the dataset.
-   - Compute a SHA-256 hash for security verification.
-   - Send the updated model weights and hash back to the server.
-   - **Automatically disconnect and shut down** upon successful transmission.
+### 3. Why this design
+This setup is intentionally simple and reliable for local experimentation and small deployment tests. It does not require a full Flower-based training loop or a dynamic global-model merge pipeline; it focuses on a robust upload-and-verify workflow that is easy to debug.
 
-### Cross-Platform Support
-This architecture is purely Python-based and uses HTTP/gRPC. It supports any operating system:
+### Cross-platform support
+The stack is Python-based and works across:
 - Windows 10 / 11
-- macOS (Intel & Apple Silicon)
-- Linux (Ubuntu, Debian, Fedora, etc.)
+- macOS
+- Linux
 
 ---
 

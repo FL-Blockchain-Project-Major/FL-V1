@@ -1,21 +1,19 @@
-# Federated Learning with YOLO & Flower
+# Federated Learning with YOLO
 
-A streamlined, cross-platform Federated Learning (FL) system using [Flower](https://flower.ai/) and [YOLOv11](https://github.com/ultralytics/ultralytics) for object detection.
+A lightweight, cross-platform client/server setup for training YOLO models on distributed datasets without sharing raw images.
 
-This project enables multiple independent clients to collaboratively train a global YOLO model without ever sharing their raw image data.
+This repository uses a simple HTTP upload workflow: each client trains locally, optionally connects to the aggregator, and submits the trained `.pt` file once. The aggregator verifies the hash and stores the accepted model.
 
 ## Features
 
-- **Cross-Platform:** Works seamlessly on Windows, macOS, and Linux.
-- **Independent Clients:** Clients connect at any time, perform local training, send updates to the server, and automatically shut down. 
-- **Auto-Shutdown Server:** The server automatically tracks how many updates it has received. Once the expected number of clients submit their data, it aggregates the final global model and shuts down.
-- **Centralized Logging:** The server outputs a single, clean JSON log file summarizing the performance, hashes, and timing of all clients in the session.
-- **Integrity Verification:** Uses SHA-256 hashing to ensure models sent over the network haven't been tampered with.
-- **Clean Terminal UI:** Muted unnecessary YOLO progress bars, providing a pristine command-line interface.
+- **Cross-platform:** Works on Windows, macOS, and Linux.
+- **Explicit client modes:** `--train` for local training and `--connect` for uploading an already-trained model.
+- **Independent clients:** Clients can run on any machine and connect to the server whenever they are ready.
+- **Strong integrity checks:** SHA-256 hashing rejects tampered or corrupted model uploads.
+- **Clean logging:** Each upload is recorded in a session JSON log and stored under `aggregator/received_models/`.
+- **Simple server lifecycle:** The aggregator waits for the configured number of valid uploads, then exits automatically.
 
 ## Documentation Index
-
-Read the documentation in the following order to understand and deploy the project:
 
 1. [Project Overview](./01_project_overview.md)
 2. [Project Structure](./02_project_structure.md)

@@ -4,11 +4,11 @@ Federated Learning Aggregator — server.py
 Run from the project root:
     python -m aggregator.server
 
-New workflow:
+Current workflow:
   - Listens on HTTP port 8090 for .pt file uploads from clients
-  - Each client trains locally, then connects ONCE to POST their .pt file
-  - Server verifies the SHA-256 hash, saves the file, logs the result
-  - After all expected clients have uploaded, the server exits automatically
+  - Clients may train locally first or connect with an already-trained model
+  - Server verifies the SHA-256 hash, saves the file, and logs the result
+  - After all expected clients have uploaded valid models, the server exits automatically
 
 Override defaults with environment variables:
     FL_NUM_CLIENTS=3 python -m aggregator.server

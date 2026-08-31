@@ -1,44 +1,46 @@
 # 08 — Troubleshooting
 
-If you encounter issues, here are the most common solutions.
+If you encounter issues, these are the most common fixes.
 
-### 1. "Dataset YAML not found" Error on Client
+### 1. "Could not find trained weights" on the client
 ```text
-✘ Dataset YAML not found: data/client1/client1.yaml
+✘  Could not find trained weights in results\client1_local\weights/
 ```
-**Cause:** The client cannot find the YOLO configuration file.
-**Fix:** Check that your `--data` parameter is pointing to the correct relative or absolute path. Ensure you are running the client script from *inside* the `client_project` directory.
+**Cause:** The client is looking in the wrong training output directory.
+**Fix:** Use `--connect` with an explicit `--model` path, or make sure the YOLO run was saved in a location the client can find. The repo commonly produces files such as:
+- `client_project/results/client1_training/weights/best.pt`
+- `client1_project/results/client1_training/weights/best.pt`
 
-### 2. Client Hangs on "Connecting to aggregator"
+### 2. Client cannot reach the aggregator
 ```text
-Connecting to aggregator at 192.168.1.5:8090…
+✘  Could not connect to http://192.168.1.5:8090/upload
 ```
-**Cause:** The client cannot reach the server IP.
+**Cause:** The server is not running or the IP/port is wrong.
 **Fix:**
-- Verify the IP address is correct.
-- Ensure the Server script is actively running and waiting for clients.
-- (Windows) Ensure your firewall isn't blocking Python network connections on port 8090.
-- Try pinging the server from the client machine: `ping 192.168.1.5`.
+- Start the aggregator with `python -m aggregator.server`.
+- Confirm the correct IP and port.
+- Check firewall settings on Windows.
 
-### 3. Server Says "HASH MISMATCH → REJECTED"
+### 3. Server rejects the upload
 ```text
-✘ client1 | hash=a4d3f34f… → REJECTED
+Hash check   : ✘  REJECTED (hash mismatch)
 ```
-**Cause:** The model weights were corrupted during network transfer.
-**Fix:** This is an automatic security feature. The server will reject the bad weights. Simply run the client script again.
+**Cause:** The uploaded model file is corrupted or changed after hashing.
+**Fix:** Train again or resend the same file. The server is intentionally strict about file integrity.
 
-### 4. Port Already in Use (Address already in use)
-**Cause:** An old instance of the server is still running in the background.
+### 4. Port already in use
+**Cause:** Another instance of the server is still running.
 **Fix:**
+- **Windows:** `netstat -ano | findstr :8090` and then `taskkill /PID <PID> /F`
 - **Linux/macOS:** `fuser -k 8090/tcp`
-- **Windows:** 
-  1. Open PowerShell as Admin.
-  2. `netstat -ano | findstr :8090` to find the PID.
-  3. `taskkill /PID <PID> /F`
 
-### 5. Out of Memory (OOM) Errors
-**Cause:** The GPU or RAM is full during training.
-**Fix:**
-- Reduce the batch size (pass `--batch 4` or similar to the YOLO arguments if modified in code).
-- Reduce `--imgsz` to 320 instead of 640.
-- Ensure clients are running independently instead of concurrently on the same machine.
+### 5. Local training runs but no file is created
+**Cause:** The project is using a different YOLO run folder than the default fallback path.
+**Fix:** Use the connect flow with a known file path:
+```bash
+python client_project/client.py --connect --server 127.0.0.1:8090 --id client1 --data client_project/data/client1/client1.yaml --model client_project/results/client1_training/weights/best.pt
+```
+
+### 6. Wrong working directory
+**Cause:** The client expects the dataset and project paths to resolve relative to the project root or the script directory.
+**Fix:** Run the commands from the repository root or use full absolute paths for `--data` and `--model`.

@@ -1,48 +1,54 @@
 # 02 — Project Structure
 
-The repository is divided into two primary logical components: the **Server (Aggregator)** and the **Client**.
+The repository is divided into a server-side aggregator and one or more client-side training scripts.
 
-## Directory Layout
+## Directory layout
 
 ```text
 FL-V1/
-├── aggregator/              # Server-side logic
-│   ├── server.py            # Main aggregator script
-│   ├── security/            # Integrity and hashing tools
-│   ├── logs/                # Centralized JSON session logs (auto-generated)
-│   └── results/             # Saved global models
+├── aggregator/
+│   ├── server.py              # HTTP upload aggregator
+│   ├── received_models/       # Accepted model files from clients
+│   └── logs/                  # Session logs for accepted uploads
 │
-├── client_project/          # Client-side logic (Deploy this to edge nodes)
-│   ├── client.py            # Main client script
-│   ├── yolo11n.pt           # Initial baseline YOLO weights
-│   ├── data/                # Local datasets (images and labels)
-│   ├── utils/               # PyTorch/Flower conversion utilities
-│   ├── security/            # Integrity and hashing tools
-│   └── results/             # Local YOLO training outputs
+├── client_project/
+│   ├── client.py              # Recommended client script (train or connect)
+│   ├── yolo11n.pt             # Baseline YOLO weights
+│   ├── data/                  # Dataset YAML and image folders
+│   ├── security/              # Hashing helpers
+│   ├── utils/                 # Model helpers
+│   └── results/               # Local training outputs
 │
-├── client1_project/         # Legacy fallback / Demo client 1
-├── client2_project/         # Legacy fallback / Demo client 2
-├── client3_project/         # Legacy fallback / Demo client 3
+├── client1_project/
+│   ├── client1.py             # Client 1 example / compatibility script
+│   ├── data/
+│   ├── results/
+│   └── security/
 │
-├── docs/                    # Documentation (you are here)
-├── requirements.txt         # Python dependencies
-└── VisDrone.yaml            # Original dataset config
+├── client2_project/
+├── client3_project/
+├── docs/
+├── requirements.txt
+├── split_database.py
+├── verify_client_once.py
+├── VisDrone.yaml
+└── yolo11n.pt
 ```
 
-### Key Files Explained
+### Key files explained
 
-- **`aggregator/server.py`**: The central nervous system. It listens for connections, merges weights, and logs progress.
-- **`client_project/client.py`**: The script that runs on the client. It downloads the weights, trains locally, and uploads the results.
-- **`yolo11n.pt`**: The starting weights. You must provide a baseline model so that all clients start from the same architecture.
+- **`aggregator/server.py`**: Runs the upload server, saves accepted model files, validates hashes, and exits after the expected number of valid uploads.
+- **`client_project/client.py`**: Main client entry point. Use `--train` to train and upload locally or `--connect` to upload an existing trained model.
+- **`client1_project/client1.py`**: Example client script for the first dataset and a compatibility/legacy path for this repo.
+- **`requirements.txt`**: Python dependencies for the project.
 
-## Deployment Strategy
+## Deployment strategy
 
-In a real-world scenario, you do **not** copy the entire `FL-V1` folder to the edge devices. 
+For a real setup, keep the server on one machine and run the client from a separate machine or terminal session.
 
-- The **Server Machine** only needs the `aggregator/` directory and `requirements.txt`.
-- The **Client Machines** only need the `client_project/` directory and `requirements.txt`.
-
-For local testing, you can run everything from the main `FL-V1` directory using different terminal windows.
+- The **server machine** needs the `aggregator/` directory and Python dependencies.
+- The **client machine** needs the client project folder and the YOLO dataset config.
+- Local testing is easiest by opening multiple terminals in the same workspace.
 
 ---
 

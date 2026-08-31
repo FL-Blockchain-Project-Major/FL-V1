@@ -1,115 +1,87 @@
 # 05 — Running the System
 
-This guide covers how to start the aggregator and clients, connect them, and monitor a full federated learning session.
+This guide covers the actual workflow used by this repository: local training or direct upload, then a single HTTP model submission.
 
-> **Prerequisite:** Complete [03 — Server Setup](./03_setup_server.md) and [04 — Client Setup](./04_setup_clients.md) first.
+> Prerequisite: ensure the Python dependencies are installed and the dataset YAML path is valid for your environment.
 
 ---
 
 ## Overview
 
 ```text
-1. Start the aggregator (server).
-2. Start any client whenever ready.
-3. The client trains locally (completely offline).
-4. After training, the client connects to the server once to upload its .pt file and exits automatically.
-5. The server automatically shuts down when all expected clients have submitted.
+1. Start the aggregator server.
+2. Run a client in train mode or connect mode.
+3. The client trains locally if required.
+4. The client uploads the `.pt` model to the aggregator via HTTP.
+5. The server validates the hash and stores the model.
+6. The server exits automatically once the expected number of valid uploads is reached.
 ```
 
-**Key behavior:** Clients are **fully independent**. The client trains locally first, then uploads. The server only waits for the uploads and does not coordinate training rounds.
+**Important:** In this repo, the server is an upload-only aggregator. It does not coordinate rounds or merge models in real time.
 
 ---
 
 ## Part 1 — Start the Aggregator
 
-On the **server machine**, ensure your virtual environment is active, then run:
+From the project root:
 
-**Linux / macOS:**
 ```bash
-python3 -m aggregator.server
-```
-
-**Windows:**
-```powershell
 python -m aggregator.server
 ```
 
-You will see a pristine UI:
+Example output:
 ```text
-════════════════════════════════════════════════════════════════════
   FEDERATED LEARNING AGGREGATOR  —  VisDrone / YOLO11n
-════════════════════════════════════════════════════════════════════
-  Session ID      : 20260830_002925
   Upload port     : 8090  (HTTP — all interfaces)
   Expected clients: 3
-  Models saved to : /home/sayam/Desktop/FL-V1/aggregator/received_models
-  Log directory   : /home/sayam/Desktop/FL-V1/aggregator/logs
+  Models saved to : C:\...\aggregator\received_models
 
   ► Clients should connect using ONE of these IPs:
-      --server <THIS_MACHINE_IP>:8090
-
-  ► Workflow:  Client trains → connects → uploads .pt once → exits
-  ► Server auto-shuts down after all 3 client(s) upload.
+      --server 192.168.1.5:8090
 
   Waiting for client uploads…
-════════════════════════════════════════════════════════════════════
 ```
 
 ---
 
-## Part 2 — Start the Clients
+## Part 2 — Run a Client
 
-On **each client machine** (or separate terminal), activate the virtual environment and run the client script. Provide the Server IP, a unique ID, and the path to the YAML data config.
+Use the recommended client script in the project root or inside `client_project/`.
 
-*(Replace `192.168.1.5:8090` with your actual server IP address)*
-
-**Client 1:**
+### Train and upload in one step
 ```bash
-python client.py --server 192.168.1.5:8090 --id client1 --data data/client1/client1.yaml
+python client_project/client.py --train --server 192.168.1.5:8090 --id client1 --data client_project/data/client1/client1.yaml
 ```
 
-**Client 2:**
+### Upload an already trained model
 ```bash
-python client.py --server 192.168.1.5:8090 --id client2 --data data/client2/client2.yaml
+python client_project/client.py --connect --server 192.168.1.5:8090 --id client1 --data client_project/data/client1/client1.yaml --model client_project/results/client1_training/weights/best.pt
 ```
 
-You will see:
-```text
-════════════════════════════════════════════════════════════
-  FL CLIENT  —  CLIENT1
-────────────────────────────────────────────────────────────
-  Server   : 192.168.1.5:8090
-  Dataset  : data/client1/client1.yaml
-  Images   : 100
-  Epochs   : 1 / round   |  Img size : 640
-════════════════════════════════════════════════════════════
-  ✔  Ready — connecting independently (no waiting for other clients)
-════════════════════════════════════════════════════════════
-
-  Connecting to aggregator at 192.168.1.5:8090…
+### Compatibility example
+```bash
+python client1_project/client1.py --connect --server 127.0.0.1:8090 --id client1 --data data/client1/client1.yaml --model results/client1_training/weights/best.pt
 ```
 
 ---
 
-## Part 3 — What Happens Next
+## Part 3 — What happens next
 
-Clients do not need to be started at the same time. The flow looks like this:
-
-1. **Local Training:** The client starts training silently locally, completely disconnected from the server.
-2. **Data Transmission:** After training finishes, the client connects to the server, uploads the trained `.pt` model file, and provides metadata (e.g., training time, dataset size, and a SHA-256 hash).
-3. **Auto-Shutdown (Client):** The client logs `🎉 Training complete. Process exiting.` and terminates automatically.
-4. **Validation:** The server accepts the upload, verifies the SHA-256 hash, and saves the file in `aggregator/received_models/`.
-5. **Auto-Shutdown (Server):** Once all expected clients have submitted their models, the server logs `🎉 ALL 3 CLIENT(S) UPLOADED SUCCESSFULLY.` and terminates automatically.
+1. **Train mode:** the client reads the dataset and runs YOLO training locally.
+2. **Connect mode:** the client finds the existing `.pt` file and uploads it directly.
+3. **Upload:** the client sends the model file and metadata to the aggregator endpoint `/upload`.
+4. **Validation:** the server computes the file hash and accepts or rejects it.
+5. **Auto-shutdown:** once all expected clients have uploaded successfully, the server stops automatically.
 
 ---
 
-## Where Are the Results?
+## Where are the results?
 
 | Output | Location |
-|--------|----------|
-| Central Aggregation Log | `aggregator/logs/session_<ID>.json` |
-| Uploaded client models | `aggregator/received_models/` |
-| Local client training results | `client_project/results/<client_id>_local/` |
+|---|---|
+| Aggregator session log | `aggregator/logs/session_<ID>.json` |
+| Uploaded model files | `aggregator/received_models/` |
+| Local client training results | `client_project/results/` or `client1_project/results/` |
 
 ---
 

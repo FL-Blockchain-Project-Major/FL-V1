@@ -48,8 +48,23 @@ from ultralytics import YOLO
 # ARGUMENT PARSING
 # =========================================================
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="FL YOLO Client — Train then Upload")
+    parser.add_argument(
+        "--train",
+        action="store_true",
+        help="Train a local YOLO model and then upload it to the aggregator.",
+    )
+    parser.add_argument(
+        "--connect",
+        action="store_true",
+        help="Connect to the aggregator and upload an already-trained model.",
+    )
+    parser.add_argument(
+        "--model",
+        default=os.environ.get("FL_MODEL_PATH"),
+        help="Path to an existing .pt model to upload when using --connect.",
+    )
     parser.add_argument(
         "--server",
         default=os.environ.get("FL_SERVER_ADDRESS", "localhost:8090"),
@@ -82,12 +97,54 @@ def parse_args():
         default=os.environ.get("FL_WEIGHTS", "yolo11n.pt"),
         help="Path to initial YOLO weights (.pt)",
     )
-    return parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.train and args.connect:
+        parser.error("Choose only one mode: --train or --connect.")
+    if not args.train and not args.connect:
+        args.train = True
+    return args
 
 
 # =========================================================
 # HELPERS
 # =========================================================
+
+def resolve_model_path(project_root: Path | str = None, run_name: str = None, preferred_path: str | Path = None) -> Path | None:
+    """Look for a trained YOLO .pt model in the usual results folders."""
+    root = Path(project_root).resolve() if project_root is not None else Path(__file__).resolve().parent
+    prefer = Path(preferred_path).expanduser() if preferred_path else None
+    if prefer and prefer.exists():
+        return prefer
+
+    candidate_names = []
+    if run_name:
+        candidate_names.extend([run_name, f"{run_name}_local", f"{run_name}_training", f"{run_name}_trained"])
+    candidate_names.extend(["client1_local", "client1_training", "client2_local", "client2_training", "client3_local", "client3_training"])
+
+    search_roots = []
+    for base in [root, root.parent, Path.cwd().resolve()]:
+        if base not in search_roots:
+            search_roots.append(base)
+
+    for base in search_roots:
+        for name in candidate_names:
+            candidates = [
+                base / "results" / name / "weights" / "best.pt",
+                base / "results" / name / "weights" / "last.pt",
+                base / "results" / name / "best.pt",
+                base / "results" / name / "last.pt",
+                base / name / "weights" / "best.pt",
+                base / name / "weights" / "last.pt",
+                base / name / "best.pt",
+                base / name / "last.pt",
+                base / "results" / f"{name}.pt",
+                base / f"{name}.pt",
+            ]
+            for candidate in candidates:
+                if candidate.exists():
+                    return candidate
+
+    return None
 
 def _human_bytes(n: int) -> str:
     for unit in ("B", "KB", "MB", "GB"):
@@ -233,13 +290,18 @@ def train_locally(args) -> Path:
     print(f"  [1/3] ✔  Training complete  ({train_time:.1f}s)")
 
     # ── Locate the saved .pt file ─────────────────────────────────────────────
-    best_pt = run_dir / "weights" / "best.pt"
-    last_pt = run_dir / "weights" / "last.pt"
-
-    pt_path = best_pt if best_pt.exists() else (last_pt if last_pt.exists() else None)
+    pt_path = resolve_model_path(
+        project_root=Path.cwd().resolve(),
+        run_name=args.id,
+        preferred_path=(run_dir / "weights" / "best.pt"),
+    )
+    if pt_path is None:
+        pt_path = resolve_model_path(project_root=Path.cwd().resolve(), run_name=f"{args.id}_local")
+    if pt_path is None:
+        pt_path = resolve_model_path(project_root=Path.cwd().resolve(), run_name=f"{args.id}_training")
 
     if pt_path is None:
-        print(f"  ✘  Could not find trained weights in {run_dir}/weights/")
+        print(f"  ✘  Could not find trained weights in {run_dir}/weights/ or the YOLO results folder.")
         sys.exit(1)
 
     size = pt_path.stat().st_size
@@ -341,6 +403,31 @@ def upload_to_aggregator(args, pt_path: Path, file_hash: str,
     sys.exit(1)
 
 
+def connect_and_upload(args):
+    """Upload a model that already exists on disk without re-training."""
+    project_root = Path(__file__).resolve().parent
+    data_file = Path(args.data)
+    if not data_file.is_absolute():
+        candidate_data = project_root / data_file
+        if candidate_data.exists():
+            data_file = candidate_data
+
+    pt_path = Path(args.model).expanduser() if args.model else None
+    if pt_path is None or not pt_path.exists():
+        pt_path = resolve_model_path(project_root=project_root, run_name=f"{args.id}_local")
+    if pt_path is None or not pt_path.exists():
+        pt_path = resolve_model_path(project_root=project_root, run_name=f"{args.id}_training")
+    if pt_path is None or not pt_path.exists():
+        print(f"  ✘  No trained model found for client {args.id}. Train it first or pass --model <path>.")
+        sys.exit(1)
+
+    file_hash = hash_file(pt_path)
+    num_examples = count_training_images(str(data_file.parent / "images")) if data_file.exists() else 0
+    train_time = 0.0
+    print(f"  [connect] Found trained model → {pt_path}")
+    upload_to_aggregator(args, pt_path, file_hash, num_examples, train_time)
+
+
 # =========================================================
 # ENTRYPOINT
 # =========================================================
@@ -348,10 +435,10 @@ def upload_to_aggregator(args, pt_path: Path, file_hash: str,
 if __name__ == "__main__":
     args = parse_args()
 
-    # ── Step 1: Train locally (no server connection needed) ────────────────
-    pt_path, file_hash, num_examples, train_time = train_locally(args)
-
-    # ── Step 2: Connect and upload the .pt file once, then exit ───────────
-    print(f"  Connecting to aggregator at {args.server}…")
-    print(f"  (Trained model will be uploaded once and the process will close)\n")
-    upload_to_aggregator(args, pt_path, file_hash, num_examples, train_time)
+    if args.connect:
+        connect_and_upload(args)
+    else:
+        pt_path, file_hash, num_examples, train_time = train_locally(args)
+        print(f"  Connecting to aggregator at {args.server}…")
+        print(f"  (Trained model will be uploaded once and the process will close)\n")
+        upload_to_aggregator(args, pt_path, file_hash, num_examples, train_time)
