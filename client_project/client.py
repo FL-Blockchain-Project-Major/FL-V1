@@ -4,6 +4,9 @@ Federated Learning Client — client.py
 Configure via environment variables (.env.local) OR command-line args:
     python client.py --server <SERVER_IP>:8080 --id client1 --data data/client1/client1.yaml
     FL_SERVER_ADDRESS=<SERVER_IP>:8080 FL_CLIENT_ID=client2 python client.py
+
+NOTE: The server IP should be the aggregator machine's IP on the shared network
+(WiFi, hotspot, etc.). The server binds on all interfaces automatically.
 """
 
 # ── Suppress all unnecessary warnings and logs ─────────────────────────────
@@ -253,13 +256,19 @@ class FLClient(fl.client.NumPyClient):
 # ENTRYPOINT
 # =========================================================
 
+# Max gRPC message size (512 MB) — must match server setting
+GRPC_MAX_MSG_LEN = 536_870_912
+
+
 if __name__ == "__main__":
     args   = parse_args()
     client = FLClient(args)
 
-    print(f"  Connecting to aggregator at {args.server}…\n")
+    print(f"  Connecting to aggregator at {args.server}…")
+    print(f"  (Make sure the server IP matches your shared network interface)\n")
 
     start_client(
         server_address=args.server,
         client=client.to_client(),
+        grpc_max_message_length=GRPC_MAX_MSG_LEN,
     )

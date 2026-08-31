@@ -5,8 +5,12 @@ Run from the project root:
     python -m aggregator.server
 
 Override defaults with environment variables:
-    FL_SERVER_ADDRESS=0.0.0.0:8080 python -m aggregator.server
+    FL_SERVER_ADDRESS=[::]:8080 python -m aggregator.server
     FL_NUM_ROUNDS=5 FL_MIN_CLIENTS=2 python -m aggregator.server
+
+NOTE: The default address [::]:8080 binds to ALL network interfaces
+(WiFi, hotspot, Ethernet, etc.) via gRPC dual-stack. Clients should
+connect using the server machine's actual IP on their shared network.
 """
 
 # ── Suppress all unnecessary warnings and logs BEFORE any imports ──────────
@@ -26,6 +30,7 @@ logging.disable(logging.WARNING)
 # ─────────────────────────────────────────────────────────────────────────────
 
 import json
+import socket
 import sys
 import threading
 import time
@@ -48,7 +53,12 @@ from .security.hashing import hash_parameters
 # ── Change this single constant to match your number of clients ──
 NUM_CLIENTS = int(os.environ.get("FL_NUM_CLIENTS", "3"))
 
-SERVER_ADDRESS = os.environ.get("FL_SERVER_ADDRESS", "0.0.0.0:8080")
+# [::]:8080 = gRPC dual-stack → accepts connections from ALL interfaces
+# (WiFi, mobile hotspot, Ethernet) — use server's actual IP on client side
+SERVER_ADDRESS = os.environ.get("FL_SERVER_ADDRESS", "[::]:8080")
+
+# Max gRPC message size (512 MB) — must match client setting
+GRPC_MAX_MSG_LEN = 536_870_912
 NUM_ROUNDS     = int(os.environ.get("FL_NUM_ROUNDS",  "3"))
 
 # Clients required to START a round — set to 1 so any client can
@@ -348,23 +358,55 @@ strategy = SecureFedAvg(
 # ENTRYPOINT
 # =========================================================
 
+def _get_all_ips() -> list[str]:
+    """Return all non-loopback IPv4 addresses for this machine."""
+    ips = []
+    try:
+        import socket
+        for info in socket.getaddrinfo(socket.gethostname(), None):
+            addr = info[4][0]
+            if ":" not in addr and not addr.startswith("127."):  # IPv4 only
+                ips.append(addr)
+        # Also grab via UDP trick for robustness
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            primary = s.getsockname()[0]
+            if primary not in ips:
+                ips.insert(0, primary)
+    except Exception:
+        pass
+    return list(dict.fromkeys(ips))  # deduplicate, preserve order
+
+
 if __name__ == "__main__":
+
+    all_ips = _get_all_ips()
+    port = SERVER_ADDRESS.split(":")[-1]
 
     print("\n" + _sep())
     print("  FEDERATED LEARNING AGGREGATOR  —  VisDrone / YOLO11n")
     print(_sep())
     print(f"  Session ID      : {SESSION_ID}")
-    print(f"  Server address  : {SERVER_ADDRESS}")
+    print(f"  Bind address    : {SERVER_ADDRESS}  (all network interfaces)")
     print(f"  FL rounds       : {NUM_ROUNDS}")
     print(f"  Expected clients: {NUM_CLIENTS}  (clients act independently)")
     print(f"  Log directory   : {LOG_DIR.resolve()}")
-    print(f"\n  ► Clients can connect and send updates independently.")
+    print()
+    print(f"  ► Clients should connect using ONE of these IPs:")
+    if all_ips:
+        for ip in all_ips:
+            print(f"      --server {ip}:{port}")
+    else:
+        print(f"      --server <THIS_MACHINE_IP>:{port}")
+    print()
+    print(f"  ► Clients can connect from ANY network (WiFi, hotspot, etc.)")
     print(f"    Training begins as soon as any client sends an update.")
-    print(f"\n  Waiting for client(s) to connect on {SERVER_ADDRESS}…")
+    print(f"\n  Waiting for client(s) to connect…")
     print(_sep() + "\n")
 
     start_server(
         server_address=SERVER_ADDRESS,
         config=ServerConfig(num_rounds=NUM_ROUNDS),
         strategy=strategy,
+        grpc_max_message_length=GRPC_MAX_MSG_LEN,
     )
