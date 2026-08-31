@@ -24,6 +24,7 @@ ENV/
 results/
 runs/
 aggregator/results/
+aggregator/received_models/
 
 # Logs (keep structure, ignore content)
 aggregator/logs/

@@ -5,7 +5,7 @@ This guide shows you how to set up the central Aggregator Server. The steps are 
 ## 1. Prerequisites
 
 - Python 3.9, 3.10, or 3.11 installed on your system.
-- Network access (Port 8080 open if clients are on different machines).
+- Network access (Port 8090 open if clients are on different machines).
 
 ## 2. Create a Virtual Environment
 
@@ -34,7 +34,7 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-> **Note:** The `requirements.txt` includes `flwr`, `ultralytics`, and `torch`. 
+> **Note:** The `requirements.txt` includes `flwr`, `ultralytics`, `torch`, `Flask`, and `requests`. 
 
 ## 4. Verify Server Configuration
 
@@ -45,7 +45,7 @@ Open `aggregator/server.py` in a text editor and ensure the `NUM_CLIENTS` consta
 NUM_CLIENTS = 3
 ```
 
-By default, the server binds to `0.0.0.0:8080`, meaning it will accept connections from any IP address on port 8080.
+By default, the server binds to `0.0.0.0:8090`, meaning it will accept connections from any IP address on port 8090.
 
 ## 5. Get Your IP Address
 

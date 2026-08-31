@@ -6,3 +6,5 @@ numpy
 Pillow
 tqdm
 python-dotenv
+requests
+Flask

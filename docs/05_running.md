@@ -11,12 +11,12 @@ This guide covers how to start the aggregator and clients, connect them, and mon
 ```text
 1. Start the aggregator (server).
 2. Start any client whenever ready.
-3. Training begins as soon as a client connects.
-4. The client automatically shuts down when finished.
+3. The client trains locally (completely offline).
+4. After training, the client connects to the server once to upload its .pt file and exits automatically.
 5. The server automatically shuts down when all expected clients have submitted.
 ```
 
-**Key behavior:** Clients are **fully independent**. The server does not wait for all clients to connect before starting. Any client can send its update at any time.
+**Key behavior:** Clients are **fully independent**. The client trains locally first, then uploads. The server only waits for the uploads and does not coordinate training rounds.
 
 ---
 
@@ -40,15 +40,18 @@ You will see a pristine UI:
   FEDERATED LEARNING AGGREGATOR  —  VisDrone / YOLO11n
 ════════════════════════════════════════════════════════════════════
   Session ID      : 20260830_002925
-  Server address  : 0.0.0.0:8080
-  FL rounds       : 3
-  Expected clients: 3  (clients act independently)
+  Upload port     : 8090  (HTTP — all interfaces)
+  Expected clients: 3
+  Models saved to : /home/sayam/Desktop/FL-V1/aggregator/received_models
   Log directory   : /home/sayam/Desktop/FL-V1/aggregator/logs
 
-  ► Clients can connect and send updates independently.
-    Training begins as soon as any client sends an update.
+  ► Clients should connect using ONE of these IPs:
+      --server <THIS_MACHINE_IP>:8090
 
-  Waiting for client(s) to connect on 0.0.0.0:8080…
+  ► Workflow:  Client trains → connects → uploads .pt once → exits
+  ► Server auto-shuts down after all 3 client(s) upload.
+
+  Waiting for client uploads…
 ════════════════════════════════════════════════════════════════════
 ```
 
@@ -58,16 +61,16 @@ You will see a pristine UI:
 
 On **each client machine** (or separate terminal), activate the virtual environment and run the client script. Provide the Server IP, a unique ID, and the path to the YAML data config.
 
-*(Replace `192.168.1.5:8080` with your actual server IP address)*
+*(Replace `192.168.1.5:8090` with your actual server IP address)*
 
 **Client 1:**
 ```bash
-python client.py --server 192.168.1.5:8080 --id client1 --data data/client1/client1.yaml
+python client.py --server 192.168.1.5:8090 --id client1 --data data/client1/client1.yaml
 ```
 
 **Client 2:**
 ```bash
-python client.py --server 192.168.1.5:8080 --id client2 --data data/client2/client2.yaml
+python client.py --server 192.168.1.5:8090 --id client2 --data data/client2/client2.yaml
 ```
 
 You will see:
@@ -92,12 +95,11 @@ You will see:
 
 Clients do not need to be started at the same time. The flow looks like this:
 
-1. **Client connects:** The server immediately sends the global weights.
-2. **Local Training:** The client trains silently (TQDM progress bars are suppressed for a clean terminal). The server displays `Waiting for client(s) to train`.
-3. **Data Transmission:** The client extracts weights, computes a SHA-256 hash, and sends the payload back to the server.
-4. **Auto-Shutdown (Client):** The client logs `✔ Task complete. Client will auto-disconnect` and terminates automatically.
-5. **Aggregation:** The server accepts the hash, performs FedAvg, logs the metrics, and increments its completed client counter.
-6. **Auto-Shutdown (Server):** Once all expected clients have submitted, the server logs `🎉 ALL 3 CLIENT(S) HAVE SUCCESSFULLY COMPLETED TRAINING` and terminates automatically.
+1. **Local Training:** The client starts training silently locally, completely disconnected from the server.
+2. **Data Transmission:** After training finishes, the client connects to the server, uploads the trained `.pt` model file, and provides metadata (e.g., training time, dataset size, and a SHA-256 hash).
+3. **Auto-Shutdown (Client):** The client logs `🎉 Training complete. Process exiting.` and terminates automatically.
+4. **Validation:** The server accepts the upload, verifies the SHA-256 hash, and saves the file in `aggregator/received_models/`.
+5. **Auto-Shutdown (Server):** Once all expected clients have submitted their models, the server logs `🎉 ALL 3 CLIENT(S) UPLOADED SUCCESSFULLY.` and terminates automatically.
 
 ---
 
@@ -106,8 +108,8 @@ Clients do not need to be started at the same time. The flow looks like this:
 | Output | Location |
 |--------|----------|
 | Central Aggregation Log | `aggregator/logs/session_<ID>.json` |
-| YOLO training metrics | `client_project/results/<client_id>_round<N>/` |
-| Local client weights | `client_project/results/<client_id>_round<N>/weights/` |
+| Uploaded client models | `aggregator/received_models/` |
+| Local client training results | `client_project/results/<client_id>_local/` |
 
 ---
 

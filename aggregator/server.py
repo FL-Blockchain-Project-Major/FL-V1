@@ -4,13 +4,18 @@ Federated Learning Aggregator — server.py
 Run from the project root:
     python -m aggregator.server
 
-Override defaults with environment variables:
-    FL_SERVER_ADDRESS=[::]:8080 python -m aggregator.server
-    FL_NUM_ROUNDS=5 FL_MIN_CLIENTS=2 python -m aggregator.server
+New workflow:
+  - Listens on HTTP port 8090 for .pt file uploads from clients
+  - Each client trains locally, then connects ONCE to POST their .pt file
+  - Server verifies the SHA-256 hash, saves the file, logs the result
+  - After all expected clients have uploaded, the server exits automatically
 
-NOTE: The default address [::]:8080 binds to ALL network interfaces
-(WiFi, hotspot, Ethernet, etc.) via gRPC dual-stack. Clients should
-connect using the server machine's actual IP on their shared network.
+Override defaults with environment variables:
+    FL_NUM_CLIENTS=3 python -m aggregator.server
+    FL_UPLOAD_PORT=8090 python -m aggregator.server
+
+NOTE: Binds on 0.0.0.0:8090 (all interfaces). Clients connect using
+      the server machine's actual IP on their shared network.
 """
 
 # ── Suppress all unnecessary warnings and logs BEFORE any imports ──────────
@@ -25,10 +30,12 @@ os.environ.setdefault("FLWR_TELEMETRY_ENABLED", "0")
 warnings.filterwarnings("ignore")
 logging.getLogger("flwr").setLevel(logging.ERROR)
 logging.getLogger("grpc").setLevel(logging.ERROR)
+logging.getLogger("werkzeug").setLevel(logging.ERROR)
 logging.disable(logging.WARNING)
 
 # ─────────────────────────────────────────────────────────────────────────────
 
+import hashlib
 import json
 import socket
 import sys
@@ -36,42 +43,39 @@ import threading
 import time
 from datetime import datetime
 from itertools import cycle
-from typing import Optional
 from pathlib import Path
 
-import flwr as fl
-from flwr.common import parameters_to_ndarrays, ndarrays_to_parameters
-from flwr.server import start_server, ServerConfig
-
-from .security.hashing import hash_parameters
+from flask import Flask, request, jsonify
 
 
 # =========================================================
 # CONFIGURATION  (override via environment variables)
 # =========================================================
 
-# ── Change this single constant to match your number of clients ──
-NUM_CLIENTS = int(os.environ.get("FL_NUM_CLIENTS", "3"))
+# Number of clients expected before server auto-shuts down
+NUM_CLIENTS   = int(os.environ.get("FL_NUM_CLIENTS",  "3"))
 
-# [::]:8080 = gRPC dual-stack → accepts connections from ALL interfaces
-# (WiFi, mobile hotspot, Ethernet) — use server's actual IP on client side
-SERVER_ADDRESS = os.environ.get("FL_SERVER_ADDRESS", "[::]:8080")
+# HTTP upload port — clients POST their .pt files here
+UPLOAD_PORT   = int(os.environ.get("FL_UPLOAD_PORT", "8090"))
+BIND_ADDRESS  = "0.0.0.0"
 
-# Max gRPC message size (512 MB) — must match client setting
-GRPC_MAX_MSG_LEN = 536_870_912
-NUM_ROUNDS     = int(os.environ.get("FL_NUM_ROUNDS",  "3"))
-
-# Clients required to START a round — set to 1 so any client can
-# send updates independently without waiting for others.
-MIN_FIT_CLIENTS       = 1
-MIN_AVAILABLE_CLIENTS = 1
-
-LOG_DIR     = Path("aggregator/logs")
-RESULTS_DIR = Path("aggregator/results")
+LOG_DIR       = Path("aggregator/logs")
+MODELS_DIR    = Path("aggregator/received_models")
 LOG_DIR.mkdir(parents=True, exist_ok=True)
-RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-SESSION_ID = datetime.now().strftime("%Y%m%d_%H%M%S")
+SESSION_ID    = datetime.now().strftime("%Y%m%d_%H%M%S")
+SESSION_LOG   = LOG_DIR / f"session_{SESSION_ID}.json"
+
+# Shared state (thread-safe via lock)
+_state_lock          = threading.Lock()
+_accepted_uploads    = 0       # count of successfully verified uploads
+_session_log_data    = {
+    "session_id": SESSION_ID,
+    "started_at": datetime.now().isoformat(),
+    "expected_clients": NUM_CLIENTS,
+    "uploads": [],
+}
 
 
 # =========================================================
@@ -86,8 +90,8 @@ def _human_bytes(n: int) -> str:
     return f"{n:.1f} TB"
 
 
-def _bytes_of(arrays) -> int:
-    return sum(a.nbytes for a in arrays)
+def _sep(char: str = "═", width: int = 68) -> str:
+    return char * width
 
 
 def _progress_bar(current: int, total: int, width: int = 36) -> str:
@@ -97,277 +101,28 @@ def _progress_bar(current: int, total: int, width: int = 36) -> str:
     return f"[{bar}] {current}/{total} ({pct:.0f}%)"
 
 
-def _sep(char: str = "═", width: int = 68) -> str:
-    return char * width
+def _hash_file(path: Path) -> str:
+    """SHA-256 hash of a file on disk."""
+    sha256 = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            sha256.update(chunk)
+    return sha256.hexdigest()
 
 
-# =========================================================
-# LIVE SPINNER
-# =========================================================
-
-class Spinner:
-    FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-
-    def __init__(self, label: str = "Working"):
-        self._label   = label
-        self._stop    = threading.Event()
-        self._thread  = threading.Thread(target=self._spin, daemon=True)
-        self._elapsed = 0.0
-
-    def _spin(self):
-        start = time.time()
-        for frame in cycle(self.FRAMES):
-            if self._stop.is_set():
-                break
-            self._elapsed = time.time() - start
-            sys.__stdout__.write(f"\r  {frame}  {self._label} … ({self._elapsed:.0f}s)")
-            sys.__stdout__.flush()
-            time.sleep(0.1)
-        sys.__stdout__.write(f"\r  ✔  {self._label} done  ({self._elapsed:.1f}s)          \n")
-        sys.__stdout__.flush()
-
-    def start(self):
-        self._thread.start()
-        return self
-
-    def stop(self, success: bool = True, final_msg: str = ""):
-        self._stop.set()
-        self._thread.join()
-        if not success:
-            sys.__stdout__.write(f"\r  ✘  {self._label} failed.                             \n")
-            sys.__stdout__.flush()
-        elif final_msg:
-            sys.__stdout__.write(f"\r  ✔  {final_msg}          \n")
-            sys.__stdout__.flush()
-
-    def __enter__(self):
-        return self.start()
-
-    def __exit__(self, *_):
-        self.stop()
+def _save_session_log():
+    with open(SESSION_LOG, "w", encoding="utf-8") as f:
+        json.dump(_session_log_data, f, indent=4)
 
 
-# =========================================================
-# CUSTOM FEDAVG STRATEGY
-# =========================================================
-
-class SecureFedAvg(fl.server.strategy.FedAvg):
-    """
-    FedAvg with:
-      - SHA-256 hash verification of every client update
-      - Clean per-round progress output
-      - JSON round logs saved to aggregator/logs/
-      - Clients operate INDEPENDENTLY — any client can submit
-        an update at any time without waiting for others.
-    """
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self._round_start: float = 0.0
-        self._fit_spinner: Optional[Spinner] = None
-        self.total_accepted_clients = 0
-
-    # ── Called before server sends global model to clients ─────────────
-    def configure_fit(self, server_round, parameters, client_manager):
-        connected = client_manager.num_available()
-
-        print(f"\n{_sep()}")
-        print(f"  ROUND {server_round}/{NUM_ROUNDS}  —  CONFIGURE FIT")
-        print(f"{_sep('─')}")
-        print(f"  Connected clients : {connected}  |  Expected total : {NUM_CLIENTS}")
-
-        arrays = parameters_to_ndarrays(parameters)
-        print(f"  Global model      : {sum(a.size for a in arrays):,} params  "
-              f"({_human_bytes(_bytes_of(arrays))})")
-
-        self._round_start = time.time()
-
-        self._fit_spinner = Spinner(
-            f"Waiting for client(s) to train"
-        )
-        self._fit_spinner.start()
-
-        return super().configure_fit(server_round, parameters, client_manager)
-
-    # ── Called after clients return their updates ───────────────────────
-    def aggregate_fit(self, server_round, results, failures):
-        elapsed = time.time() - self._round_start
-
-        if self._fit_spinner is not None:
-            self._fit_spinner.stop(
-                final_msg=f"Client(s) responded in {elapsed:.1f}s"
-            )
-            self._fit_spinner = None
-
-        print(f"\n{_sep()}")
-        print(f"  ROUND {server_round}/{NUM_ROUNDS}  —  AGGREGATE FIT")
-        print(f"{_sep('─')}")
-        print(f"  Responses : {len(results)}  |  Failures : {len(failures)}  "
-              f"|  Training time : {elapsed:.1f}s")
-        print()
-
-        accepted_results = []
-        rejected_clients = []
-
-        round_log = {
-            "session_id": SESSION_ID,
-            "round":      server_round,
-            "timestamp":  datetime.now().isoformat(),
-            "clients":    [],
-        }
-
-        # ── Verify each client update ───────────────────────────────────
-        for idx, (client_proxy, fit_res) in enumerate(results, 1):
-            client_id     = fit_res.metrics.get("client_id", f"client_{idx}")
-            reported_hash = fit_res.metrics.get("model_hash", None)
-            num_examples  = fit_res.num_examples
-
-            arrays   = parameters_to_ndarrays(fit_res.parameters)
-            payload  = _human_bytes(_bytes_of(arrays))
-            n_params = sum(a.size for a in arrays)
-
-            calculated_hash = hash_parameters(arrays)
-            hash_valid = (reported_hash is not None) and (reported_hash == calculated_hash)
-            status_sym = "✔" if hash_valid else "✘"
-            status_lbl = "ACCEPTED" if hash_valid else "REJECTED"
-
-            print(f"  {status_sym} {client_id:12s} | "
-                  f"samples={num_examples:,}  params={n_params:,}  "
-                  f"payload={payload}  hash={calculated_hash[:16]}…  → {status_lbl}")
-
-            if hash_valid:
-                accepted_results.append((client_proxy, fit_res))
-                client_status = "accepted"
-            else:
-                rejected_clients.append(client_id)
-                client_status = "rejected"
-
-            round_log["clients"].append({
-                "client_id":       client_id,
-                "num_examples":    num_examples,
-                "payload_bytes":   _bytes_of(arrays),
-                "reported_hash":   reported_hash,
-                "calculated_hash": calculated_hash,
-                "status":          client_status,
-            })
-
-        # ── Round summary ───────────────────────────────────────────────
-        accepted = len(accepted_results)
-        rejected = len(rejected_clients)
-
-        print()
-        print(f"  {_progress_bar(accepted, len(results))}")
-        print(f"  Accepted : {accepted}  |  Rejected : {rejected}")
-        if rejected_clients:
-            print(f"  Rejected : {rejected_clients}")
-
-        if accepted == 0:
-            print(f"\n  ✘  No valid updates received — global model unchanged.")
-            round_log["aggregation"] = "failed — no valid updates"
-            self._save_round_log(round_log)
-            return None, {}
-
-        # ── FedAvg aggregation ──────────────────────────────────────────
-        print(f"\n  ► FedAvg on {accepted} update(s)…")
-        agg_start = time.time()
-
-        with Spinner("FedAvg aggregation"):
-            aggregated_parameters, aggregated_metrics = super().aggregate_fit(
-                server_round, accepted_results, failures
-            )
-
-        agg_elapsed = time.time() - agg_start
-
-        if aggregated_parameters is not None:
-            agg_arrays = parameters_to_ndarrays(aggregated_parameters)
-            print(f"  ✔  Aggregation complete ({agg_elapsed:.2f}s)  "
-                  f"| payload={_human_bytes(_bytes_of(agg_arrays))}")
-            round_log["aggregation"] = "success"
-        else:
-            print(f"  ✘  FedAvg failed.")
-            round_log["aggregation"] = "failed"
-
-        total_round_time = time.time() - self._round_start
-        round_log["round_duration_s"] = round(total_round_time, 2)
-        print(f"  Total round time : {total_round_time:.1f}s")
-        print(f"{_sep()}\n")
-
-        self._save_round_log(round_log)
-        
-        # Give clients 3 seconds to process the response and auto-disconnect 
-        # so they don't accidentally get sampled for the next round.
-        time.sleep(3)
-        
-        self.total_accepted_clients += accepted
-        if self.total_accepted_clients >= NUM_CLIENTS:
-            print(f"\n{_sep()}")
-            print(f"  🎉 ALL {NUM_CLIENTS} CLIENT(S) HAVE SUCCESSFULLY COMPLETED TRAINING.")
-            print(f"  Aggregator shutting down.")
-            print(f"{_sep()}\n")
-            os._exit(0)
-        
-        return (aggregated_parameters, aggregated_metrics)
-
-    # ── Evaluation callback ─────────────────────────────────────────────
-    def aggregate_evaluate(self, server_round, results, failures):
-        if not results:
-            return None, {}
-
-        print(f"\n  ROUND {server_round}  —  EVALUATE")
-        for _, eval_res in results:
-            cid  = eval_res.metrics.get("client_id", "unknown")
-            loss = eval_res.loss
-            n    = eval_res.num_examples
-            print(f"    {cid}: loss={loss:.4f}  samples={n:,}")
-
-        return super().aggregate_evaluate(server_round, results, failures)
-
-    def _save_round_log(self, round_log: dict):
-        filename = LOG_DIR / f"session_{SESSION_ID}.json"
-        
-        if filename.exists():
-            with open(filename, "r", encoding="utf-8") as f:
-                try:
-                    data = json.load(f)
-                except json.JSONDecodeError:
-                    data = {"session_id": SESSION_ID, "rounds": []}
-        else:
-            data = {"session_id": SESSION_ID, "rounds": []}
-            
-        data["rounds"].append(round_log)
-        
-        with open(filename, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4)
-        print(f"  📄  Log updated → {filename.name}")
-
-
-# =========================================================
-# STRATEGY — clients are fully independent
-# =========================================================
-
-strategy = SecureFedAvg(
-    fraction_fit=1.0,
-    min_fit_clients=MIN_FIT_CLIENTS,             # 1 — a round starts with any available client
-    min_available_clients=MIN_AVAILABLE_CLIENTS, # 1 — don't wait for all clients
-    fraction_evaluate=0.0,
-    min_evaluate_clients=0,
-)
-
-
-# =========================================================
-# ENTRYPOINT
-# =========================================================
-
-def _get_all_ips() -> list[str]:
+def _get_all_ips() -> list:
     """Return all non-loopback IPv4 addresses for this machine."""
     ips = []
     try:
-        import socket
         for info in socket.getaddrinfo(socket.gethostname(), None):
             addr = info[4][0]
-            if ":" not in addr and not addr.startswith("127."):  # IPv4 only
+            if ":" not in addr and not addr.startswith("127."):
                 ips.append(addr)
-        # Also grab via UDP trick for robustness
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.connect(("8.8.8.8", 80))
             primary = s.getsockname()[0]
@@ -375,38 +130,169 @@ def _get_all_ips() -> list[str]:
                 ips.insert(0, primary)
     except Exception:
         pass
-    return list(dict.fromkeys(ips))  # deduplicate, preserve order
+    return list(dict.fromkeys(ips))
 
+
+def _shutdown_server():
+    """Gracefully shut down the process after a short delay."""
+    time.sleep(2)
+    os._exit(0)
+
+
+# =========================================================
+# HTTP APP (FLASK)
+# =========================================================
+
+app = Flask(__name__)
+# Allow large uploads (1GB)
+app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024
+
+@app.route("/", methods=["GET"])
+def health_check():
+    """Health check endpoint — GET / returns server status."""
+    with _state_lock:
+        accepted = _accepted_uploads
+    return jsonify({
+        "status":           "running",
+        "session_id":       SESSION_ID,
+        "accepted_uploads": accepted,
+        "expected_clients": NUM_CLIENTS,
+    })
+
+@app.route("/upload", methods=["POST"])
+def upload_model():
+    global _accepted_uploads
+
+    if 'model' not in request.files:
+        return jsonify({"error": "No 'model' file field in request"}), 400
+
+    model_file = request.files['model']
+    if model_file.filename == '':
+        return jsonify({"error": "No selected file"}), 400
+
+    client_id     = request.form.get("client_id",    "unknown")
+    reported_hash = request.form.get("model_hash",   None)
+    train_time    = request.form.get("train_time_s", "0")
+    num_examples  = request.form.get("num_examples", "0")
+    epochs        = request.form.get("epochs",       "1")
+    imgsz         = request.form.get("imgsz",        "640")
+
+    received_at   = datetime.now().isoformat()
+
+    print(f"\n{_sep()}")
+    print(f"  UPLOAD RECEIVED  —  {client_id.upper()}")
+    print(_sep("─"))
+    print(f"  Client ID    : {client_id}")
+    print(f"  Train time   : {train_time}s  |  Images : {num_examples}  |  Epochs : {epochs}")
+    print(f"  Reported hash: {reported_hash[:32] if reported_hash else 'NONE'}…")
+
+    # ── Save to disk ───────────────────────────────────────────────────
+    save_path = MODELS_DIR / f"{client_id}_{SESSION_ID}.pt"
+    model_file.save(str(save_path))
+    file_size = save_path.stat().st_size
+    print(f"  File size    : {_human_bytes(file_size)}")
+
+    # ── Verify hash ────────────────────────────────────────────────────
+    calculated_hash = _hash_file(save_path)
+    hash_valid = (reported_hash is not None) and (reported_hash == calculated_hash)
+    status_sym = "✔" if hash_valid else "✘"
+    status_lbl = "ACCEPTED" if hash_valid else "REJECTED (hash mismatch)"
+
+    print(f"  Calculated   : {calculated_hash[:32]}…")
+    print(f"  Hash check   : {status_sym}  {status_lbl}")
+
+    # ── Update shared state ────────────────────────────────────────────
+    upload_record = {
+        "client_id":       client_id,
+        "received_at":     received_at,
+        "file_size_bytes": file_size,
+        "save_path":       str(save_path),
+        "train_time_s":    train_time,
+        "num_examples":    num_examples,
+        "epochs":          epochs,
+        "imgsz":           imgsz,
+        "reported_hash":   reported_hash,
+        "calculated_hash": calculated_hash,
+        "status":          "accepted" if hash_valid else "rejected",
+    }
+
+    with _state_lock:
+        _session_log_data["uploads"].append(upload_record)
+        if hash_valid:
+            _accepted_uploads += 1
+            current_accepted = _accepted_uploads
+        else:
+            current_accepted = _accepted_uploads
+
+    _save_session_log()
+
+    if not hash_valid:
+        # Remove the rejected file
+        save_path.unlink(missing_ok=True)
+
+    progress = _progress_bar(current_accepted, NUM_CLIENTS)
+    print(f"\n  Progress     : {progress}")
+    print(f"  📄  Log → {SESSION_LOG.name}")
+    print(_sep() + "\n")
+
+    # ── Check if all clients have uploaded — shutdown ──────────────────
+    if hash_valid and current_accepted >= NUM_CLIENTS:
+        _session_log_data["completed_at"] = datetime.now().isoformat()
+        _session_log_data["status"]       = "complete"
+        _save_session_log()
+
+        print(f"\n{_sep()}")
+        print(f"  🎉  ALL {NUM_CLIENTS} CLIENT(S) UPLOADED SUCCESSFULLY.")
+        print(f"  Models saved in : {MODELS_DIR.resolve()}")
+        print(f"  Session log     : {SESSION_LOG.resolve()}")
+        print(f"  Aggregator shutting down…")
+        print(_sep() + "\n")
+
+        # Shutdown in a background thread so HTTP response is sent first
+        threading.Thread(target=_shutdown_server, daemon=True).start()
+
+    # ── Send response ──────────────────────────────────────────────────
+    if hash_valid:
+        return jsonify({
+            "message":   f"Model accepted and saved as {save_path.name}",
+            "client_id": client_id,
+            "status":    "accepted",
+            "progress":  f"{current_accepted}/{NUM_CLIENTS}",
+        }), 200
+    else:
+        return jsonify({
+            "error":     "Hash mismatch — model rejected",
+            "client_id": client_id,
+            "status":    "rejected",
+        }), 422
+
+
+# =========================================================
+# ENTRYPOINT
+# =========================================================
 
 if __name__ == "__main__":
 
     all_ips = _get_all_ips()
-    port = SERVER_ADDRESS.split(":")[-1]
 
     print("\n" + _sep())
     print("  FEDERATED LEARNING AGGREGATOR  —  VisDrone / YOLO11n")
     print(_sep())
     print(f"  Session ID      : {SESSION_ID}")
-    print(f"  Bind address    : {SERVER_ADDRESS}  (all network interfaces)")
-    print(f"  FL rounds       : {NUM_ROUNDS}")
-    print(f"  Expected clients: {NUM_CLIENTS}  (clients act independently)")
+    print(f"  Upload port     : {UPLOAD_PORT}  (HTTP — all interfaces)")
+    print(f"  Expected clients: {NUM_CLIENTS}")
+    print(f"  Models saved to : {MODELS_DIR.resolve()}")
     print(f"  Log directory   : {LOG_DIR.resolve()}")
     print()
     print(f"  ► Clients should connect using ONE of these IPs:")
     if all_ips:
         for ip in all_ips:
-            print(f"      --server {ip}:{port}")
+            print(f"      --server {ip}:{UPLOAD_PORT}")
     else:
-        print(f"      --server <THIS_MACHINE_IP>:{port}")
+        print(f"      --server <THIS_MACHINE_IP>:{UPLOAD_PORT}")
     print()
-    print(f"  ► Clients can connect from ANY network (WiFi, hotspot, etc.)")
-    print(f"    Training begins as soon as any client sends an update.")
-    print(f"\n  Waiting for client(s) to connect…")
+    print(f"  ► Server auto-shuts down after all {NUM_CLIENTS} client(s) upload.")
+    print(f"\n  Waiting for client uploads…")
     print(_sep() + "\n")
 
-    start_server(
-        server_address=SERVER_ADDRESS,
-        config=ServerConfig(num_rounds=NUM_ROUNDS),
-        strategy=strategy,
-        grpc_max_message_length=GRPC_MAX_MSG_LEN,
-    )
+    app.run(host=BIND_ADDRESS, port=UPLOAD_PORT, debug=False, use_reloader=False)

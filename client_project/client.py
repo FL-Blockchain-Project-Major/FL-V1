@@ -1,12 +1,18 @@
 """
 Federated Learning Client — client.py
 ======================================
-Configure via environment variables (.env.local) OR command-line args:
-    python client.py --server <SERVER_IP>:8080 --id client1 --data data/client1/client1.yaml
-    FL_SERVER_ADDRESS=<SERVER_IP>:8080 FL_CLIENT_ID=client2 python client.py
+New workflow:
+  1. Train the YOLO model locally (completely offline)
+  2. Connect to the aggregator server
+  3. Send the trained .pt file ONCE via HTTP
+  4. Exit automatically
 
-NOTE: The server IP should be the aggregator machine's IP on the shared network
-(WiFi, hotspot, etc.). The server binds on all interfaces automatically.
+Configure via environment variables (.env.local) OR command-line args:
+    python client.py --server <SERVER_IP>:8090 --id client1 --data data/client1/client1.yaml
+    FL_SERVER_ADDRESS=<SERVER_IP>:8090 FL_CLIENT_ID=client2 python client.py
+
+NOTE: The server IP should be the aggregator machine's IP on the shared network.
+      The upload port is 8090 (HTTP), separate from the Flower gRPC port (8080).
 """
 
 # ── Suppress all unnecessary warnings and logs ─────────────────────────────
@@ -27,19 +33,15 @@ logging.disable(logging.WARNING)
 # ─────────────────────────────────────────────────────────────────────────────
 
 import argparse
+import contextlib
+import hashlib
 import sys
 import threading
 import time
-import contextlib
-from itertools import cycle
 from pathlib import Path
 
-import flwr as fl
-from flwr.client import start_client
+import requests
 from ultralytics import YOLO
-
-from utils.model_utils import get_parameters, set_parameters
-from security.hashing import hash_parameters
 
 
 # =========================================================
@@ -47,13 +49,39 @@ from security.hashing import hash_parameters
 # =========================================================
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="FL YOLO Client")
-    parser.add_argument("--server",  default=os.environ.get("FL_SERVER_ADDRESS", "localhost:8080"))
-    parser.add_argument("--id",      default=os.environ.get("FL_CLIENT_ID",      "client1"))
-    parser.add_argument("--data",    default=os.environ.get("FL_DATASET_YAML",   "data/client1/client1.yaml"))
-    parser.add_argument("--epochs",  type=int, default=int(os.environ.get("FL_LOCAL_EPOCHS", "1")))
-    parser.add_argument("--imgsz",   type=int, default=int(os.environ.get("FL_IMAGE_SIZE",   "640")))
-    parser.add_argument("--weights", default=os.environ.get("FL_WEIGHTS",         "yolo11n.pt"))
+    parser = argparse.ArgumentParser(description="FL YOLO Client — Train then Upload")
+    parser.add_argument(
+        "--server",
+        default=os.environ.get("FL_SERVER_ADDRESS", "localhost:8090"),
+        help="Aggregator HTTP upload address (host:port). Default: localhost:8090",
+    )
+    parser.add_argument(
+        "--id",
+        default=os.environ.get("FL_CLIENT_ID", "client1"),
+        help="Unique client identifier",
+    )
+    parser.add_argument(
+        "--data",
+        default=os.environ.get("FL_DATASET_YAML", "data/client1/client1.yaml"),
+        help="Path to dataset YAML file",
+    )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=int(os.environ.get("FL_LOCAL_EPOCHS", "1")),
+        help="Number of local training epochs",
+    )
+    parser.add_argument(
+        "--imgsz",
+        type=int,
+        default=int(os.environ.get("FL_IMAGE_SIZE", "640")),
+        help="Training image size",
+    )
+    parser.add_argument(
+        "--weights",
+        default=os.environ.get("FL_WEIGHTS", "yolo11n.pt"),
+        help="Path to initial YOLO weights (.pt)",
+    )
     return parser.parse_args()
 
 
@@ -81,6 +109,15 @@ def count_training_images(data_dir: str) -> int:
     return total
 
 
+def hash_file(path: Path) -> str:
+    """SHA-256 hash of a file on disk."""
+    sha256 = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            sha256.update(chunk)
+    return sha256.hexdigest()
+
+
 # =========================================================
 # LIVE SPINNER
 # =========================================================
@@ -96,6 +133,7 @@ class Spinner:
 
     def _spin(self):
         start = time.time()
+        from itertools import cycle
         for frame in cycle(self.FRAMES):
             if self._stop.is_set():
                 break
@@ -103,7 +141,9 @@ class Spinner:
             sys.__stdout__.write(f"\r  {frame}  {self._label} … ({self._elapsed:.0f}s)")
             sys.__stdout__.flush()
             time.sleep(0.1)
-        sys.__stdout__.write(f"\r  ✔  {self._label} done  ({self._elapsed:.1f}s)          \n")
+        sys.__stdout__.write(
+            f"\r  ✔  {self._label} done  ({self._elapsed:.1f}s)          \n"
+        )
         sys.__stdout__.flush()
 
     def start(self):
@@ -114,7 +154,9 @@ class Spinner:
         self._stop.set()
         self._thread.join()
         if not success:
-            sys.__stdout__.write(f"\r  ✘  {self._label} failed.                             \n")
+            sys.__stdout__.write(
+                f"\r  ✘  {self._label} failed.                             \n"
+            )
             sys.__stdout__.flush()
         elif final_msg:
             sys.__stdout__.write(f"\r  ✔  {final_msg}          \n")
@@ -128,147 +170,188 @@ class Spinner:
 
 
 # =========================================================
-# FEDERATED CLIENT CLASS
+# STEP 1 — LOCAL TRAINING
 # =========================================================
 
-class FLClient(fl.client.NumPyClient):
+def train_locally(args) -> Path:
+    """
+    Run YOLO training entirely on the local machine.
+    Returns the path to the best trained weights (.pt file).
+    """
+    run_name   = f"{args.id}_local"
+    run_dir    = Path("results") / run_name
 
-    def __init__(self, args):
-        self.args        = args
-        self.client_id   = args.id
-        self.server_addr = args.server
+    print(f"\n{_sep()}")
+    print(f"  FL CLIENT  —  {args.id.upper()}")
+    print(_sep("─"))
+    print(f"  Dataset  : {args.data}")
+    print(f"  Epochs   : {args.epochs}  |  Img size : {args.imgsz}")
+    print(f"  Weights  : {args.weights}")
+    print(f"  Output   : {run_dir}/weights/best.pt")
+    print(_sep())
+    print()
 
-        # ── Validate dataset YAML ───────────────────────────────────────
-        if not Path(args.data).exists():
-            print(f"  ✘  Dataset YAML not found: {args.data}")
-            sys.exit(1)
+    # ── Validate inputs ─────────────────────────────────────────────────────
+    if not Path(args.data).exists():
+        print(f"  ✘  Dataset YAML not found: {args.data}")
+        sys.exit(1)
+    if not Path(args.weights).exists():
+        print(f"  ✘  Weights file not found: {args.weights}")
+        sys.exit(1)
 
-        if not Path(args.weights).exists():
-            print(f"  ✘  Weights file not found: {args.weights}")
-            sys.exit(1)
+    # ── Count images ─────────────────────────────────────────────────────────
+    yaml_dir     = str(Path(args.data).parent / "images")
+    num_examples = count_training_images(yaml_dir)
+    print(f"  [1/3] Starting local training  "
+          f"({num_examples:,} images × {args.epochs} epoch(s))…")
 
-        # ── Load YOLO model (suppress YOLO's own stdout) ────────────────
-        self.yolo  = YOLO(args.weights, verbose=False)
-        self.model = self.yolo.model
+    # ── Train ─────────────────────────────────────────────────────────────────
+    t0 = time.time()
+    spinner = Spinner(f"Training [{args.id}]").start()
+    yolo = YOLO(args.weights, verbose=False)
+    try:
+        with open(os.devnull, "w") as f, \
+             contextlib.redirect_stdout(f), \
+             contextlib.redirect_stderr(f):
+            yolo.train(
+                data=args.data,
+                epochs=args.epochs,
+                imgsz=args.imgsz,
+                project="results",
+                name=run_name,
+                exist_ok=True,
+                verbose=False,
+            )
+    except Exception as e:
+        spinner.stop(success=False)
+        print(f"  ✘  Training failed: {e}")
+        sys.exit(1)
+    finally:
+        spinner.stop()
 
-        # ── Count training images ───────────────────────────────────────
-        yaml_dir          = str(Path(args.data).parent / "images")
-        self.num_examples = count_training_images(yaml_dir)
+    train_time = time.time() - t0
+    print(f"  [1/3] ✔  Training complete  ({train_time:.1f}s)")
 
-        # ── Print clean startup banner ──────────────────────────────────
-        print("\n" + _sep())
-        print(f"  FL CLIENT  —  {self.client_id.upper()}")
-        print(_sep("─"))
-        print(f"  Server   : {self.server_addr}")
-        print(f"  Dataset  : {args.data}")
-        print(f"  Images   : {self.num_examples:,}")
-        print(f"  Epochs   : {args.epochs} / round   |  Img size : {args.imgsz}")
-        print(_sep())
-        print(f"  ✔  Ready — connecting independently (no waiting for other clients)")
-        print(_sep() + "\n")
+    # ── Locate the saved .pt file ─────────────────────────────────────────────
+    best_pt = run_dir / "weights" / "best.pt"
+    last_pt = run_dir / "weights" / "last.pt"
 
-    # ── Send initial parameters to server ──────────────────────────────
-    def get_parameters(self, config):
-        params  = get_parameters(self.model)
-        payload = sum(a.nbytes for a in params)
-        print(f"  [{self.client_id}] ► Sending initial params to server  "
-              f"({_human_bytes(payload)})")
-        return params
+    pt_path = best_pt if best_pt.exists() else (last_pt if last_pt.exists() else None)
 
-    # ── Core FL round ───────────────────────────────────────────────────
-    def fit(self, parameters, config):
-        server_round = int(config.get("server_round", 0))
+    if pt_path is None:
+        print(f"  ✘  Could not find trained weights in {run_dir}/weights/")
+        sys.exit(1)
 
-        print(f"\n{_sep()}")
-        print(f"  [{self.client_id}]  ROUND {server_round}  —  FIT")
-        print(_sep("─"))
+    size = pt_path.stat().st_size
+    print(f"  [2/3] Model saved  →  {pt_path}  ({_human_bytes(size)})")
 
-        # 1. Load global model
-        t0 = time.time()
-        set_parameters(self.model, parameters)
-        payload_in = sum(a.nbytes for a in parameters)
-        print(f"  [1/5] Global model received  "
-              f"({_human_bytes(payload_in)}, {time.time()-t0:.2f}s)")
+    # ── Hash the file ─────────────────────────────────────────────────────────
+    file_hash = hash_file(pt_path)
+    print(f"  [3/3] SHA-256  : {file_hash[:32]}…")
+    print(_sep() + "\n")
 
-        # 2. Local training
-        print(f"  [2/5] Local training  "
-              f"({self.num_examples:,} images × {self.args.epochs} epoch(s))…")
-        t1 = time.time()
+    return pt_path, file_hash, num_examples, train_time
 
-        spinner = Spinner(f"Training  [{self.client_id}]").start()
+
+# =========================================================
+# STEP 2 — UPLOAD TO AGGREGATOR
+# =========================================================
+
+def upload_to_aggregator(args, pt_path: Path, file_hash: str,
+                          num_examples: int, train_time: float):
+    """
+    Connect to the aggregator's HTTP endpoint and upload the .pt file once.
+    Exits the process after a successful upload (or after a fatal error).
+    """
+    server_host = args.server.split(":")[0]
+    server_port = args.server.split(":")[1] if ":" in args.server else "8090"
+    upload_url  = f"http://{server_host}:{server_port}/upload"
+
+    print(_sep())
+    print(f"  UPLOADING TO AGGREGATOR")
+    print(_sep("─"))
+    print(f"  Endpoint : {upload_url}")
+    print(f"  File     : {pt_path.name}  ({_human_bytes(pt_path.stat().st_size)})")
+    print(f"  Hash     : {file_hash[:32]}…")
+    print()
+
+    metadata = {
+        "client_id":    args.id,
+        "model_hash":   file_hash,
+        "train_time_s": round(train_time, 2),
+        "num_examples": num_examples,
+        "epochs":       args.epochs,
+        "imgsz":        args.imgsz,
+        "weights_used": args.weights,
+    }
+
+    # ── Retry loop (3 attempts) ───────────────────────────────────────────────
+    MAX_RETRIES = 3
+    RETRY_DELAY = 5  # seconds
+
+    for attempt in range(1, MAX_RETRIES + 1):
         try:
-            with open(os.devnull, 'w') as f, contextlib.redirect_stdout(f), contextlib.redirect_stderr(f):
-                self.yolo.train(
-                    data=self.args.data,
-                    epochs=self.args.epochs,
-                    imgsz=self.args.imgsz,
-                    project="results",
-                    name=f"{self.client_id}_round{server_round}",
-                    exist_ok=True,
-                    verbose=False,
+            print(f"  ► Connecting…  (attempt {attempt}/{MAX_RETRIES})")
+            t_up = time.time()
+
+            with open(pt_path, "rb") as pt_file:
+                response = requests.post(
+                    upload_url,
+                    files={"model": (pt_path.name, pt_file, "application/octet-stream")},
+                    data=metadata,
+                    timeout=300,  # 5 min timeout for large files
                 )
-        finally:
-            spinner.stop()
 
-        train_time = time.time() - t1
-        print(f"  [2/5] ✔  Training complete  ({train_time:.1f}s)")
+            elapsed = time.time() - t_up
 
-        # 3. Extract updated parameters
-        updated_params = get_parameters(self.model)
-        payload_out    = sum(a.nbytes for a in updated_params)
-        print(f"  [3/5] Params extracted  "
-              f"({len(updated_params):,} tensors  {_human_bytes(payload_out)})")
+            if response.status_code == 200:
+                resp_data = response.json()
+                print(f"  ✔  Upload successful  ({elapsed:.1f}s)")
+                print(f"  Server response : {resp_data.get('message', 'OK')}")
+                print(_sep() + "\n")
+                print(f"  🎉  Training complete. Process exiting.")
+                print(_sep() + "\n")
+                sys.exit(0)
 
-        # 4. SHA-256 hash
-        t2 = time.time()
-        model_hash = hash_parameters(updated_params)
-        print(f"  [4/5] Hash : {model_hash[:32]}…  ({time.time()-t2:.2f}s)")
+            else:
+                print(f"  ✘  Server returned HTTP {response.status_code}: {response.text}")
+                if attempt < MAX_RETRIES:
+                    print(f"  Retrying in {RETRY_DELAY}s…")
+                    time.sleep(RETRY_DELAY)
 
-        # 5. Send to aggregator
-        metrics = {
-            "client_id":    self.client_id,
-            "model_hash":   model_hash,
-            "train_time_s": round(train_time, 2),
-            "num_images":   self.num_examples,
-        }
-        print(f"  [5/5] Sending update to aggregator  ({_human_bytes(payload_out)})")
-        print(_sep("─"))
-        print(f"  [{self.client_id}] Round {server_round} complete  |  "
-              f"images={self.num_examples:,}  time={train_time:.0f}s")
-        print(f"  ✔  Task complete. Client will auto-disconnect.")
-        print(_sep() + "\n")
+        except requests.exceptions.ConnectionError:
+            print(f"  ✘  Could not connect to {upload_url}")
+            if attempt < MAX_RETRIES:
+                print(f"  ⏳  Waiting {RETRY_DELAY}s before retry…")
+                time.sleep(RETRY_DELAY)
 
-        # Schedule auto-shutdown so the client stops after sending data
-        def auto_shutdown():
-            time.sleep(2)
-            os._exit(0)
-        threading.Thread(target=auto_shutdown, daemon=True).start()
+        except requests.exceptions.Timeout:
+            print(f"  ✘  Upload timed out on attempt {attempt}")
+            if attempt < MAX_RETRIES:
+                time.sleep(RETRY_DELAY)
 
-        return (updated_params, self.num_examples, metrics)
+        except Exception as e:
+            print(f"  ✘  Unexpected error: {e}")
+            if attempt < MAX_RETRIES:
+                time.sleep(RETRY_DELAY)
 
-    # ── Evaluate stub ───────────────────────────────────────────────────
-    def evaluate(self, parameters, config):
-        set_parameters(self.model, parameters)
-        return 0.0, self.num_examples, {"client_id": self.client_id}
+    print(f"\n  ✘  All {MAX_RETRIES} upload attempts failed.")
+    print(f"  Trained model is saved locally at: {pt_path}")
+    print(_sep() + "\n")
+    sys.exit(1)
 
 
 # =========================================================
 # ENTRYPOINT
 # =========================================================
 
-# Max gRPC message size (512 MB) — must match server setting
-GRPC_MAX_MSG_LEN = 536_870_912
-
-
 if __name__ == "__main__":
-    args   = parse_args()
-    client = FLClient(args)
+    args = parse_args()
 
+    # ── Step 1: Train locally (no server connection needed) ────────────────
+    pt_path, file_hash, num_examples, train_time = train_locally(args)
+
+    # ── Step 2: Connect and upload the .pt file once, then exit ───────────
     print(f"  Connecting to aggregator at {args.server}…")
-    print(f"  (Make sure the server IP matches your shared network interface)\n")
-
-    start_client(
-        server_address=args.server,
-        client=client.to_client(),
-        grpc_max_message_length=GRPC_MAX_MSG_LEN,
-    )
+    print(f"  (Trained model will be uploaded once and the process will close)\n")
+    upload_to_aggregator(args, pt_path, file_hash, num_examples, train_time)
