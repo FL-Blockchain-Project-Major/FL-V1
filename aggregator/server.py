@@ -38,6 +38,7 @@ logging.disable(logging.WARNING)
 import hashlib
 import json
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -118,11 +119,16 @@ def _save_session_log():
 def _get_all_ips() -> list:
     """Return all non-loopback IPv4 addresses for this machine."""
     ips = []
+
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None):
             addr = info[4][0]
             if ":" not in addr and not addr.startswith("127."):
                 ips.append(addr)
+    except Exception:
+        pass
+
+    try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.connect(("8.8.8.8", 80))
             primary = s.getsockname()[0]
@@ -130,6 +136,18 @@ def _get_all_ips() -> list:
                 ips.insert(0, primary)
     except Exception:
         pass
+
+    if os.name == "nt":
+        try:
+            result = subprocess.check_output(["ipconfig"], text=True, stderr=subprocess.STDOUT)
+            for line in result.splitlines():
+                if "IPv4 Address" in line or "IPv4 Address" in line:
+                    candidate = line.split(":")[-1].strip()
+                    if candidate and candidate not in ips and not candidate.startswith("127."):
+                        ips.append(candidate)
+        except Exception:
+            pass
+
     return list(dict.fromkeys(ips))
 
 
@@ -290,6 +308,10 @@ if __name__ == "__main__":
             print(f"      --server {ip}:{UPLOAD_PORT}")
     else:
         print(f"      --server <THIS_MACHINE_IP>:{UPLOAD_PORT}")
+    print()
+    print(f"  ► Choose the IP that matches the SAME NETWORK as the client")
+    print(f"      Example: Wi‑Fi IP for home/office, or hotspot IP for phone tethering")
+    print(f"      10.5.70.249 is valid only when both devices are on that network")
     print()
     print(f"  ► Server auto-shuts down after all {NUM_CLIENTS} client(s) upload.")
     print(f"\n  Waiting for client uploads…")
