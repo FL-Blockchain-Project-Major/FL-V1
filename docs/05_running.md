@@ -78,7 +78,7 @@ You will see:
 ════════════════════════════════════════════════════════════
   FL CLIENT  —  CLIENT1
 ────────────────────────────────────────────────────────────
-  Server   : 192.168.1.5:8080
+  Server   : 192.168.1.5:8090
   Dataset  : data/client1/client1.yaml
   Images   : 100
   Epochs   : 1 / round   |  Img size : 640
@@ -86,7 +86,7 @@ You will see:
   ✔  Ready — connecting independently (no waiting for other clients)
 ════════════════════════════════════════════════════════════
 
-  Connecting to aggregator at 192.168.1.5:8080…
+  Connecting to aggregator at 192.168.1.5:8090…
 ```
 
 ---

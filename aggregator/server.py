@@ -24,7 +24,7 @@ import os
 import warnings
 from dotenv import load_dotenv
 
-load_dotenv(".env.local")
+load_dotenv(".env")
 
 os.environ.setdefault("FLWR_TELEMETRY_ENABLED", "0")
 warnings.filterwarnings("ignore")

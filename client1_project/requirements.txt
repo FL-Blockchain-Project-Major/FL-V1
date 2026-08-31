@@ -1,0 +1,8 @@
+ultralytics==8.4.129
+torch
+torchvision
+numpy
+Pillow
+tqdm
+python-dotenv
+requests

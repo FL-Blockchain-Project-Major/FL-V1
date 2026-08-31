@@ -30,7 +30,7 @@ Clients use command-line arguments for configuration.
 
 | Argument | Default | Description |
 |---|---|---|
-| `--server` | `localhost:8080` | IP and port of the aggregator |
+| `--server` | `localhost:8090` | IP and port of the aggregator |
 | `--id` | `client1` | Unique ID for the client (used for logging) |
 | `--data` | `data/client1/client1.yaml` | Path to the YAML dataset file |
 | `--epochs` | `1` | Number of YOLO training epochs |
@@ -41,7 +41,7 @@ Clients use command-line arguments for configuration.
 
 ```bash
 python client.py \
-    --server 192.168.1.5:8080 \
+    --server 192.168.1.5:8090 \
     --id my_custom_client \
     --data data/custom/dataset.yaml \
     --epochs 5 \

@@ -11,13 +11,13 @@ If you encounter issues, here are the most common solutions.
 
 ### 2. Client Hangs on "Connecting to aggregator"
 ```text
-Connecting to aggregator at 192.168.1.5:8080…
+Connecting to aggregator at 192.168.1.5:8090…
 ```
 **Cause:** The client cannot reach the server IP.
 **Fix:**
 - Verify the IP address is correct.
 - Ensure the Server script is actively running and waiting for clients.
-- (Windows) Ensure your firewall isn't blocking Python network connections on port 8080.
+- (Windows) Ensure your firewall isn't blocking Python network connections on port 8090.
 - Try pinging the server from the client machine: `ping 192.168.1.5`.
 
 ### 3. Server Says "HASH MISMATCH → REJECTED"
@@ -30,10 +30,10 @@ Connecting to aggregator at 192.168.1.5:8080…
 ### 4. Port Already in Use (Address already in use)
 **Cause:** An old instance of the server is still running in the background.
 **Fix:**
-- **Linux/macOS:** `fuser -k 8080/tcp`
+- **Linux/macOS:** `fuser -k 8090/tcp`
 - **Windows:** 
   1. Open PowerShell as Admin.
-  2. `netstat -ano | findstr :8080` to find the PID.
+  2. `netstat -ano | findstr :8090` to find the PID.
   3. `taskkill /PID <PID> /F`
 
 ### 5. Out of Memory (OOM) Errors
