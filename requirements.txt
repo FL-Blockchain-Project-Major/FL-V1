@@ -4,4 +4,5 @@ torch
 torchvision
 numpy
 Pillow
-tqdmpython-dotenv
+tqdm
+python-dotenv
