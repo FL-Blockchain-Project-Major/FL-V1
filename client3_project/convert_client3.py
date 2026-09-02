@@ -7,7 +7,7 @@ from tqdm import tqdm
 # PATHS
 # =========================================================
 
-CLIENT_DIR = Path("data/client3")
+CLIENT_DIR = Path(__file__).resolve().parent / "data" / "client3"
 
 IMAGES_DIR = CLIENT_DIR / "images"
 ANNOTATIONS_DIR = CLIENT_DIR / "annotations"

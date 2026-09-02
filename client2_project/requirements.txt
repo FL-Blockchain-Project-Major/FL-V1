@@ -1,0 +1,25 @@
+# ─────────────────────────────────────────────────────────
+# Client 1 — Python Dependencies
+# ─────────────────────────────────────────────────────────
+# Install with:
+#   pip install --upgrade pip
+#   pip install -r requirements.txt
+
+# YOLO model training
+ultralytics==8.4.129
+
+# Federated Learning client
+flwr
+
+# Deep learning backend
+torch
+torchvision
+
+# Numerical operations (used by hashing + model utils)
+numpy
+
+# Image handling (used by YOLO internally)
+Pillow
+
+# .env config loading
+python-dotenv

@@ -18,8 +18,8 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 
 BASE_DIR = Path(__file__).resolve().parent
 
-DATASET_DIR = BASE_DIR / "data" / "client2"
-DATASET_PATH = DATASET_DIR / "client2.yaml"
+DATASET_DIR = BASE_DIR.parent / "clients" / "client2"
+DATASET_PATH = BASE_DIR / "data" / "client2" / "client2.yaml"
 IMAGES_DIR = DATASET_DIR / "images"
 LABELS_DIR = DATASET_DIR / "labels"
 
