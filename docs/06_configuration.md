@@ -10,7 +10,7 @@ Configuration is split between `.env` files (for secrets and defaults) and envir
 |-----|---------|-------------|
 | `FL_NUM_CLIENTS` | `3` | Total unique clients expected. Server auto-shuts down after all submit. |
 | `FL_SERVER_ADDRESS` | `0.0.0.0:8080` | Host and port the aggregator binds to. |
-| `FL_NUM_ROUNDS` | `3` | Number of Flower federated rounds. |
+| `FL_NUM_ROUNDS` | `3` | Maximum Flower rounds; raised to at least the client count so independently connecting clients have a turn. |
 | `FL_HASH_SECRET` | *(see note)* | Shared secret for HMAC-SHA256 hashing. **Must match clients.** |
 
 > **Security:** Change `FL_HASH_SECRET` to a strong random string before deployment. The same value must be set in every client's `.env`. Never commit this value to version control.
@@ -22,7 +22,7 @@ FL_NUM_CLIENTS=2 FL_SERVER_ADDRESS=0.0.0.0:9000 python -m aggregator.server
 
 ---
 
-## Client — `client1_project/.env`
+## Client — `clientN_project/.env`
 
 | Key | Default | Description |
 |-----|---------|-------------|
@@ -30,7 +30,7 @@ FL_NUM_CLIENTS=2 FL_SERVER_ADDRESS=0.0.0.0:9000 python -m aggregator.server
 | `FL_SERVER_ADDRESS` | `localhost:8080` | Aggregator address. Replace with the server IP for remote machines. |
 | `FL_DATASET_YAML` | `data/client1/client1.yaml` | Path to the YOLO dataset config, relative to `client1_project/`. |
 | `FL_LOCAL_EPOCHS` | `1` | YOLO training epochs per round. |
-| `FL_IMAGE_SIZE` | `64` | Image size for YOLO training (`64x64`). |
+| `FL_IMAGE_SIZE` | `640` | Image size for YOLO training (`640x640`). |
 | `FL_WEIGHTS` | `yolo11n.pt` | Baseline YOLO weights file inside `client1_project/`. |
 | `FL_HASH_SECRET` | *(see note)* | Shared secret for HMAC-SHA256 hashing. **Must match aggregator.** |
 
@@ -44,6 +44,10 @@ FL_NUM_CLIENTS=2 FL_SERVER_ADDRESS=0.0.0.0:9000 python -m aggregator.server
 | `--train` | Run local YOLO training only — does not connect |
 | `--connect` | Connect and send model to aggregator — skips training |
 | `--train --connect` | Explicit train-then-connect (same as default) |
+
+The same settings are available in `client1_project/.env`, `client2_project/.env`,
+and `client3_project/.env`. Keep `FL_CLIENT_ID` unique and keep the HMAC secret
+identical across the aggregator and all clients.
 
 ### Example: remote aggregator
 ```bash

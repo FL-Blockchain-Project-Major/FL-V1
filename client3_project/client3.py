@@ -53,10 +53,6 @@ RESULTS_DIR   = BASE_DIR / "results"
 # =========================================================
 
 
-IMAGE_SIZE = 640
-
-
-
 # =========================================================
 # HELPER FUNCTIONS
 # =========================================================
@@ -208,7 +204,10 @@ def run_connect(parameters: list, model_hash: str, num_examples: int):
     print(f"\n  Connecting to aggregator at {SERVER_ADDRESS}…\n")
 
     client = FLClient(parameters, model_hash, num_examples)
-    fl.client.start_numpy_client(server_address=SERVER_ADDRESS, client=client)
+    fl.client.start_client(
+        server_address=SERVER_ADDRESS,
+        client=client.to_client(),
+    )
 
 
 # =========================================================

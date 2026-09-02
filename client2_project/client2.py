@@ -1,12 +1,15 @@
 import flwr as fl
 from ultralytics import YOLO
 from pathlib import Path
+from dotenv import load_dotenv
 
 from utils.model_utils import get_parameters, set_parameters
 from security.hashing import hash_parameters
 import threading
 import time
 import os
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 
 # =========================================================
@@ -25,13 +28,12 @@ LABELS_DIR = DATASET_DIR / "labels"
 # CONFIGURATION
 # =========================================================
 
-CLIENT_ID = "client2"
-
-LOCAL_EPOCHS = 1
-IMAGE_SIZE = 64
-
-SERVER_ADDRESS = "10.5.70.249:8080"
-
+CLIENT_ID = os.environ.get("FL_CLIENT_ID", "client2")
+LOCAL_EPOCHS = int(os.environ.get("FL_LOCAL_EPOCHS", "1"))
+IMAGE_SIZE = int(os.environ.get("FL_IMAGE_SIZE", "640"))
+SERVER_ADDRESS = os.environ.get("FL_SERVER_ADDRESS", "localhost:8080")
+WEIGHTS = os.environ.get("FL_WEIGHTS", "yolo11n.pt")
+DATASET_YAML = os.environ.get("FL_DATASET_YAML", "data/client2/client2.yaml")
 
 # =========================================================
 # HELPER FUNCTIONS
@@ -191,7 +193,7 @@ class Client2(fl.client.NumPyClient):
 
         print("\nLoading YOLOv11 Nano model...")
 
-        self.yolo = YOLO("yolo11n.pt")
+        self.yolo = YOLO(str(BASE_DIR / WEIGHTS))
 
         # Underlying PyTorch model
         self.model = self.yolo.model
@@ -538,7 +540,7 @@ if __name__ == "__main__":
 
     client = Client2()
 
-    fl.client.start_numpy_client(
+    fl.client.start_client(
         server_address=SERVER_ADDRESS,
-        client=client
+        client=client.to_client(),
     )

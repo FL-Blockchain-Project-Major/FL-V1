@@ -39,6 +39,14 @@ client1_project/data/client1/images/
 client1_project/data/client1/labels/
 client1_project/data/client1/annotations/
 client1_project/data/client1/labels.cache
+client2_project/data/client2/images/
+client2_project/data/client2/labels/
+client2_project/data/client2/annotations/
+client2_project/data/client2/labels.cache
+client3_project/data/client3/images/
+client3_project/data/client3/labels/
+client3_project/data/client3/annotations/
+client3_project/data/client3/labels.cache
 client_project/data/*/images/
 client_project/data/*/labels/
 client_project/data/*/annotations/
@@ -54,7 +62,3 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
-client3_project/data/client3/images/
-client3_project/data/client3/labels/
-client3_project/data/client3/annotations/
-client3_project/data/client3/labels.cache

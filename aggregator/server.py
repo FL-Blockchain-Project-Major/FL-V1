@@ -48,9 +48,13 @@ from .security.hashing import hash_parameters
 # Total unique clients expected. Server shuts down after all have submitted.
 NUM_CLIENTS    = int(os.environ.get("FL_NUM_CLIENTS",    "3"))
 SERVER_ADDRESS = os.environ.get("FL_SERVER_ADDRESS", "0.0.0.0:8080")
-NUM_ROUNDS     = int(os.environ.get("FL_NUM_ROUNDS",     "3"))
+# Clients may connect one at a time, so retain enough rounds for sequential submissions.
+NUM_ROUNDS     = max(
+    int(os.environ.get("FL_NUM_ROUNDS", "3")),
+    NUM_CLIENTS,
+)
 
-LOG_DIR = Path("aggregator/logs")
+LOG_DIR = Path(__file__).resolve().parent / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 SESSION_ID = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -245,9 +249,8 @@ class SecureFedAvg(fl.server.strategy.FedAvg):
         if len(self._accepted_ids) >= NUM_CLIENTS:
             print(_sep())
             print(f"  🎉  ALL {NUM_CLIENTS} CLIENT(S) SUBMITTED — aggregation complete.")
-            print(f"  Shutting down.")
+            print(f"  Completing the configured server session.")
             print(_sep() + "\n")
-            os._exit(0)
 
         # Brief pause so clients can cleanly disconnect before the next round
         time.sleep(2)

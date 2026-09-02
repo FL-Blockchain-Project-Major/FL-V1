@@ -8,14 +8,16 @@
 
 ```text
 1. Start the aggregator on the server machine.
-2. Start any client whenever ready — no need to start simultaneously.
+2. Start `client1`, `client2`, and `client3` whenever ready — no need to start simultaneously.
 3. Each client trains locally, then sends its model to the aggregator.
 4. The aggregator verifies the hash, aggregates, and logs the result.
 5. Server and clients shut down automatically when all clients have submitted.
 ```
 
 **Clients are fully independent.** The server accepts updates from any client at any time.
-A client that has already submitted is rejected immediately and not counted again.
+A client that has already submitted is rejected immediately, logged as
+`rejected_duplicate`, and not counted again. The server continues through its
+remaining rounds waiting for other unique clients.
 
 ---
 
@@ -47,9 +49,9 @@ You will see:
 
 ---
 
-## Part 2 — Start the Client
+## Part 2 — Start the Clients
 
-Navigate into `client1_project/` and run `client1.py`.
+Navigate into each project folder and run its client script. For example:
 
 ### Default (train then connect)
 ```bash
@@ -80,6 +82,9 @@ python client1.py --connect
 
 # Explicit train-then-connect
 python client1.py --train --connect
+
+# In separate terminals, repeat with client2_project/client2.py and
+# client3_project/client3.py.
 ```
 
 ---
