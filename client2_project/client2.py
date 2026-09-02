@@ -3,13 +3,14 @@ from ultralytics import YOLO
 from pathlib import Path
 from dotenv import load_dotenv
 
-from utils.model_utils import get_parameters, set_parameters
-from security.hashing import hash_parameters
 import threading
 import time
 import os
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
+
+from utils.model_utils import get_parameters, set_parameters
+from security.hashing import hash_parameters
 
 
 # =========================================================
@@ -18,7 +19,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 
 BASE_DIR = Path(__file__).resolve().parent
 
-DATASET_DIR = BASE_DIR.parent / "clients" / "client2"
+DATASET_DIR = BASE_DIR / "data" / "client2"
 DATASET_PATH = BASE_DIR / "data" / "client2" / "client2.yaml"
 IMAGES_DIR = DATASET_DIR / "images"
 LABELS_DIR = DATASET_DIR / "labels"

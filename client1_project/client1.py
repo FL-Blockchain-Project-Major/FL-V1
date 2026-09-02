@@ -43,7 +43,7 @@ WEIGHTS       = os.environ.get("FL_WEIGHTS",      "yolo11n.pt")
 
 BASE_DIR      = Path(__file__).resolve().parent
 DATASET_PATH  = BASE_DIR / DATASET_YAML
-CLIENT_DATA_DIR = BASE_DIR.parent / "clients" / CLIENT_ID
+CLIENT_DATA_DIR = BASE_DIR / "data" / CLIENT_ID
 IMAGES_DIR    = CLIENT_DATA_DIR / "images"
 LABELS_DIR    = CLIENT_DATA_DIR / "labels"
 RESULTS_DIR   = BASE_DIR / "results"

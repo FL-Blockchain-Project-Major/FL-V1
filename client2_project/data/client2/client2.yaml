@@ -1,4 +1,4 @@
-path: ../../clients/client2
+path: data/client2
 
 train: images
 val: images
