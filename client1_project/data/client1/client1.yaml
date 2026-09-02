@@ -1,5 +1,4 @@
-path: data/client1
-
+path: C:\Users\KIIT0001\Desktop\FL-V1\client1_project\data\client1
 train: images
 val: images
 
