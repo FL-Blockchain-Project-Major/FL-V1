@@ -61,15 +61,11 @@ IMAGE_SIZE = 640
 # HELPER FUNCTIONS
 # =========================================================
 
-def count_training_images():
-    """Count images in Client 1's local dataset."""
+def _sep(char="─", width=60):
+    return char * width
 
-    extensions = [
-        "*.jpg",
-        "*.jpeg",
-        "*.png"
-    ]
 
+def _count_images(images_dir: Path) -> int:
     total = 0
     for ext in ("*.jpg", "*.jpeg", "*.png"):
         total += len(list(images_dir.glob(ext)))
