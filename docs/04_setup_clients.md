@@ -1,54 +1,55 @@
 # 04 — Client Setup
 
-This guide explains how to prepare edge devices (clients) for training. These steps apply whether you are running multiple clients on different physical computers or simulating them in multiple terminal windows on the same computer.
+This guide explains how to prepare `client1_project/` for training and submission.
+
+---
 
 ## 1. Prerequisites
 
-- Python 3.9, 3.10, or 3.11 installed.
-- The `client_project` folder copied to the client machine.
-- A baseline `yolo11n.pt` model file placed inside the `client_project` directory.
+- Python 3.9, 3.10, or 3.11
+- `client1_project/` folder on the client machine
+- Baseline `yolo11n.pt` weights inside `client1_project/`
+
+---
 
 ## 2. Virtual Environment
 
-Open a terminal/command prompt and navigate to the `client_project` folder.
+From inside `client1_project/`:
 
 **Linux / macOS:**
 ```bash
-cd /path/to/client_project
 python3 -m venv .venv
 source .venv/bin/activate
-```
-
-**Windows:**
-```powershell
-cd C:\path\to\client_project
-python -m venv .venv
-.venv\Scripts\activate
-```
-
-Install dependencies:
-```bash
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-## 3. Data Preparation
-
-Each client must have its own subset of the data. The data should be organized inside the `client_project/data/` folder.
-
-A typical client dataset structure looks like this:
-```text
-client_project/
-└── data/
-    └── client1/
-        ├── images/         # Local images (.jpg, .png)
-        ├── labels/         # YOLO-format text files (.txt)
-        └── client1.yaml    # Dataset configuration file
+**Windows:**
+```powershell
+python -m venv .venv
+.venv\Scripts\activate
+pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-The `client1.yaml` file tells YOLO where to find the data and the class names. An example:
+---
+
+## 3. Data Preparation
+
+Each client must have its own local dataset. Place it inside `client1_project/data/`:
+
+```text
+client1_project/
+└── data/
+    └── client1/
+        ├── images/         # Training images (.jpg, .png)
+        ├── labels/         # YOLO-format annotation files (.txt)
+        └── client1.yaml    # Dataset configuration
+```
+
+Example `client1.yaml`:
 ```yaml
-path: /absolute/path/to/client_project/data/client1
+path: /absolute/path/to/client1_project/data/client1
 train: images
 val: images
 
@@ -65,7 +66,26 @@ names:
   9: motor
 ```
 
-*Note: Ensure the `path` variable inside the `.yaml` file is an absolute path to avoid Ultralytics resolution errors.*
+> Use the **absolute path** for `path:` — relative paths can cause Ultralytics resolution errors.
+
+---
+
+## 4. Configure the Client
+
+Open `client1_project/.env` and fill in your values:
+
+```dotenv
+FL_CLIENT_ID=client1
+FL_SERVER_ADDRESS=192.168.1.5:8080   # Replace with actual server IP
+FL_DATASET_YAML=data/client1/client1.yaml
+FL_LOCAL_EPOCHS=1
+FL_IMAGE_SIZE=640
+FL_WEIGHTS=yolo11n.pt
+FL_HASH_SECRET=change-me-to-a-strong-secret   # Must match aggregator
+```
+
+> `FL_HASH_SECRET` must be the same value set in `aggregator/.env`.
+> `FL_CLIENT_ID` must be unique across all clients — duplicate submissions are rejected by the aggregator.
 
 ---
 

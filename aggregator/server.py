@@ -2,64 +2,56 @@
 Federated Learning Aggregator — server.py
 ==========================================
 Run from the project root:
+
     python -m aggregator.server
 
-Override defaults with environment variables:
-    FL_SERVER_ADDRESS=0.0.0.0:8080 python -m aggregator.server
-    FL_NUM_ROUNDS=5 FL_MIN_CLIENTS=2 python -m aggregator.server
+All configuration is loaded from aggregator/.env (see that file for keys).
+You can also override any value via environment variables at launch:
+
+    FL_NUM_CLIENTS=2 FL_SERVER_ADDRESS=0.0.0.0:9000 python -m aggregator.server
 """
 
-# ── Suppress all unnecessary warnings and logs BEFORE any imports ──────────
+# Suppress framework noise before any imports
 import logging
 import os
 import warnings
-from dotenv import load_dotenv
 
-load_dotenv(".env.local")
-
-os.environ.setdefault("FLWR_TELEMETRY_ENABLED", "0")
 warnings.filterwarnings("ignore")
-logging.getLogger("flwr").setLevel(logging.ERROR)
-logging.getLogger("grpc").setLevel(logging.ERROR)
 logging.disable(logging.WARNING)
+os.environ.setdefault("FLWR_TELEMETRY_ENABLED", "0")
 
-# ─────────────────────────────────────────────────────────────────────────────
-
+import hmac as _hmac
 import json
 import sys
 import threading
 import time
 from datetime import datetime
 from itertools import cycle
-from typing import Optional
 from pathlib import Path
+from typing import Optional
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 import flwr as fl
-from flwr.common import parameters_to_ndarrays, ndarrays_to_parameters
+from flwr.common import parameters_to_ndarrays
 from flwr.server import start_server, ServerConfig
 
 from .security.hashing import hash_parameters
 
 
 # =========================================================
-# CONFIGURATION  (override via environment variables)
+# CONFIGURATION  (overridable via environment variables)
 # =========================================================
 
-# ── Change this single constant to match your number of clients ──
-NUM_CLIENTS = int(os.environ.get("FL_NUM_CLIENTS", "3"))
-
+# Total unique clients expected. Server shuts down after all have submitted.
+NUM_CLIENTS    = int(os.environ.get("FL_NUM_CLIENTS",    "3"))
 SERVER_ADDRESS = os.environ.get("FL_SERVER_ADDRESS", "0.0.0.0:8080")
-NUM_ROUNDS     = int(os.environ.get("FL_NUM_ROUNDS",  "3"))
+NUM_ROUNDS     = int(os.environ.get("FL_NUM_ROUNDS",     "3"))
 
-# Clients required to START a round — set to 1 so any client can
-# send updates independently without waiting for others.
-MIN_FIT_CLIENTS       = 1
-MIN_AVAILABLE_CLIENTS = 1
-
-LOG_DIR     = Path("aggregator/logs")
-RESULTS_DIR = Path("aggregator/results")
+LOG_DIR = Path("aggregator/logs")
 LOG_DIR.mkdir(parents=True, exist_ok=True)
-RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 SESSION_ID = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -67,6 +59,10 @@ SESSION_ID = datetime.now().strftime("%Y%m%d_%H%M%S")
 # =========================================================
 # HELPERS
 # =========================================================
+
+def _sep(char="═", width=68):
+    return char * width
+
 
 def _human_bytes(n: int) -> str:
     for unit in ("B", "KB", "MB", "GB"):
@@ -80,28 +76,22 @@ def _bytes_of(arrays) -> int:
     return sum(a.nbytes for a in arrays)
 
 
-def _progress_bar(current: int, total: int, width: int = 36) -> str:
-    filled = int(width * current / total) if total else 0
-    bar    = "█" * filled + "░" * (width - filled)
-    pct    = 100 * current / total if total else 0
-    return f"[{bar}] {current}/{total} ({pct:.0f}%)"
-
-
-def _sep(char: str = "═", width: int = 68) -> str:
-    return char * width
+def hmac_compare(a: str, b: str) -> bool:
+    """Constant-time string comparison to prevent timing-based hash attacks."""
+    return _hmac.compare_digest(a.lower(), b.lower())
 
 
 # =========================================================
-# LIVE SPINNER
+# SPINNER
 # =========================================================
 
 class Spinner:
     FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
-    def __init__(self, label: str = "Working"):
-        self._label   = label
-        self._stop    = threading.Event()
-        self._thread  = threading.Thread(target=self._spin, daemon=True)
+    def __init__(self, label: str):
+        self._label  = label
+        self._stop   = threading.Event()
+        self._thread = threading.Thread(target=self._spin, daemon=True)
         self._elapsed = 0.0
 
     def _spin(self):
@@ -113,22 +103,16 @@ class Spinner:
             sys.__stdout__.write(f"\r  {frame}  {self._label} … ({self._elapsed:.0f}s)")
             sys.__stdout__.flush()
             time.sleep(0.1)
-        sys.__stdout__.write(f"\r  ✔  {self._label} done  ({self._elapsed:.1f}s)          \n")
+        sys.__stdout__.write(f"\r  ✔  {self._label} ({self._elapsed:.1f}s)          \n")
         sys.__stdout__.flush()
 
     def start(self):
         self._thread.start()
         return self
 
-    def stop(self, success: bool = True, final_msg: str = ""):
+    def stop(self):
         self._stop.set()
         self._thread.join()
-        if not success:
-            sys.__stdout__.write(f"\r  ✘  {self._label} failed.                             \n")
-            sys.__stdout__.flush()
-        elif final_msg:
-            sys.__stdout__.write(f"\r  ✔  {final_msg}          \n")
-            sys.__stdout__.flush()
 
     def __enter__(self):
         return self.start()
@@ -138,67 +122,53 @@ class Spinner:
 
 
 # =========================================================
-# CUSTOM FEDAVG STRATEGY
+# STRATEGY
 # =========================================================
 
 class SecureFedAvg(fl.server.strategy.FedAvg):
     """
     FedAvg with:
-      - SHA-256 hash verification of every client update
-      - Clean per-round progress output
-      - JSON round logs saved to aggregator/logs/
-      - Clients operate INDEPENDENTLY — any client can submit
-        an update at any time without waiting for others.
+      - Duplicate client rejection (same client_id refused per session)
+      - HMAC-SHA256 hash verification of every update
+      - Clean terminal output and JSON session logs
     """
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._round_start: float = 0.0
+        self._round_start: float    = 0.0
         self._fit_spinner: Optional[Spinner] = None
-        self.total_accepted_clients = 0
+        # Track which clients have already submitted successfully
+        self._accepted_ids: set = set()
 
-    # ── Called before server sends global model to clients ─────────────
+    # ── Prepare round ───────────────────────────────────────────────────
     def configure_fit(self, server_round, parameters, client_manager):
-        connected = client_manager.num_available()
-
         print(f"\n{_sep()}")
-        print(f"  ROUND {server_round}/{NUM_ROUNDS}  —  CONFIGURE FIT")
-        print(f"{_sep('─')}")
-        print(f"  Connected clients : {connected}  |  Expected total : {NUM_CLIENTS}")
-
-        arrays = parameters_to_ndarrays(parameters)
-        print(f"  Global model      : {sum(a.size for a in arrays):,} params  "
-              f"({_human_bytes(_bytes_of(arrays))})")
+        print(f"  ROUND {server_round}/{NUM_ROUNDS}  —  waiting for client(s)")
+        print(_sep("─"))
+        print(f"  Submitted so far : {len(self._accepted_ids)}/{NUM_CLIENTS}  "
+              f"|  Remaining : {NUM_CLIENTS - len(self._accepted_ids)}")
 
         self._round_start = time.time()
-
-        self._fit_spinner = Spinner(
-            f"Waiting for client(s) to train"
-        )
+        self._fit_spinner = Spinner("Waiting for client(s) to train")
         self._fit_spinner.start()
 
         return super().configure_fit(server_round, parameters, client_manager)
 
-    # ── Called after clients return their updates ───────────────────────
+    # ── Aggregate updates ───────────────────────────────────────────────
     def aggregate_fit(self, server_round, results, failures):
         elapsed = time.time() - self._round_start
 
-        if self._fit_spinner is not None:
-            self._fit_spinner.stop(
-                final_msg=f"Client(s) responded in {elapsed:.1f}s"
-            )
+        if self._fit_spinner:
+            self._fit_spinner.stop()
             self._fit_spinner = None
 
         print(f"\n{_sep()}")
-        print(f"  ROUND {server_round}/{NUM_ROUNDS}  —  AGGREGATE FIT")
-        print(f"{_sep('─')}")
+        print(f"  ROUND {server_round}/{NUM_ROUNDS}  —  aggregating")
+        print(_sep("─"))
         print(f"  Responses : {len(results)}  |  Failures : {len(failures)}  "
-              f"|  Training time : {elapsed:.1f}s")
-        print()
+              f"|  Elapsed : {elapsed:.1f}s\n")
 
         accepted_results = []
-        rejected_clients = []
-
         round_log = {
             "session_id": SESSION_ID,
             "round":      server_round,
@@ -206,31 +176,35 @@ class SecureFedAvg(fl.server.strategy.FedAvg):
             "clients":    [],
         }
 
-        # ── Verify each client update ───────────────────────────────────
         for idx, (client_proxy, fit_res) in enumerate(results, 1):
-            client_id     = fit_res.metrics.get("client_id", f"client_{idx}")
-            reported_hash = fit_res.metrics.get("model_hash", None)
+            client_id     = fit_res.metrics.get("client_id", f"unknown_{idx}")
+            reported_hash = fit_res.metrics.get("model_hash")
             num_examples  = fit_res.num_examples
+            arrays        = parameters_to_ndarrays(fit_res.parameters)
+            payload       = _human_bytes(_bytes_of(arrays))
 
-            arrays   = parameters_to_ndarrays(fit_res.parameters)
-            payload  = _human_bytes(_bytes_of(arrays))
-            n_params = sum(a.size for a in arrays)
+            # ── Duplicate check ─────────────────────────────────────────
+            if client_id in self._accepted_ids:
+                print(f"  ⚠  {client_id:14s} | DUPLICATE — already submitted. Rejected, not counted.")
+                round_log["clients"].append({
+                    "client_id": client_id,
+                    "status":    "rejected_duplicate",
+                })
+                continue
 
+            # ── Hash verification ───────────────────────────────────────
             calculated_hash = hash_parameters(arrays)
-            hash_valid = (reported_hash is not None) and (reported_hash == calculated_hash)
-            status_sym = "✔" if hash_valid else "✘"
-            status_lbl = "ACCEPTED" if hash_valid else "REJECTED"
+            hash_ok = reported_hash is not None and hmac_compare(reported_hash, calculated_hash)
+            status  = "accepted" if hash_ok else "rejected_hash_mismatch"
+            sym     = "✔" if hash_ok else "✘"
+            lbl     = "ACCEPTED" if hash_ok else "REJECTED (hash mismatch)"
 
-            print(f"  {status_sym} {client_id:12s} | "
-                  f"samples={num_examples:,}  params={n_params:,}  "
-                  f"payload={payload}  hash={calculated_hash[:16]}…  → {status_lbl}")
+            print(f"  {sym} {client_id:14s} | samples={num_examples:,}  "
+                  f"payload={payload}  hash={calculated_hash[:16]}…  → {lbl}")
 
-            if hash_valid:
+            if hash_ok:
                 accepted_results.append((client_proxy, fit_res))
-                client_status = "accepted"
-            else:
-                rejected_clients.append(client_id)
-                client_status = "rejected"
+                self._accepted_ids.add(client_id)
 
             round_log["clients"].append({
                 "client_id":       client_id,
@@ -238,107 +212,80 @@ class SecureFedAvg(fl.server.strategy.FedAvg):
                 "payload_bytes":   _bytes_of(arrays),
                 "reported_hash":   reported_hash,
                 "calculated_hash": calculated_hash,
-                "status":          client_status,
+                "status":          status,
             })
 
-        # ── Round summary ───────────────────────────────────────────────
         accepted = len(accepted_results)
-        rejected = len(rejected_clients)
-
-        print()
-        print(f"  {_progress_bar(accepted, len(results))}")
-        print(f"  Accepted : {accepted}  |  Rejected : {rejected}")
-        if rejected_clients:
-            print(f"  Rejected : {rejected_clients}")
+        print(f"\n  Accepted this round : {accepted}  "
+              f"|  Total session : {len(self._accepted_ids)}/{NUM_CLIENTS}")
 
         if accepted == 0:
-            print(f"\n  ✘  No valid updates received — global model unchanged.")
-            round_log["aggregation"] = "failed — no valid updates"
-            self._save_round_log(round_log)
+            print("  ✘  No valid updates — global model unchanged.")
+            round_log["aggregation"] = "skipped — no valid updates"
+            self._save_log(round_log)
             return None, {}
 
-        # ── FedAvg aggregation ──────────────────────────────────────────
+        # ── FedAvg ─────────────────────────────────────────────────────
         print(f"\n  ► FedAvg on {accepted} update(s)…")
-        agg_start = time.time()
-
         with Spinner("FedAvg aggregation"):
-            aggregated_parameters, aggregated_metrics = super().aggregate_fit(
+            aggregated, aggregated_metrics = super().aggregate_fit(
                 server_round, accepted_results, failures
             )
 
-        agg_elapsed = time.time() - agg_start
+        total_time = time.time() - self._round_start
+        round_log["aggregation"]     = "success" if aggregated else "failed"
+        round_log["round_duration_s"] = round(total_time, 2)
 
-        if aggregated_parameters is not None:
-            agg_arrays = parameters_to_ndarrays(aggregated_parameters)
-            print(f"  ✔  Aggregation complete ({agg_elapsed:.2f}s)  "
-                  f"| payload={_human_bytes(_bytes_of(agg_arrays))}")
-            round_log["aggregation"] = "success"
-        else:
-            print(f"  ✘  FedAvg failed.")
-            round_log["aggregation"] = "failed"
+        print(f"  Total round time : {total_time:.1f}s")
+        print(_sep() + "\n")
 
-        total_round_time = time.time() - self._round_start
-        round_log["round_duration_s"] = round(total_round_time, 2)
-        print(f"  Total round time : {total_round_time:.1f}s")
-        print(f"{_sep()}\n")
+        self._save_log(round_log)
 
-        self._save_round_log(round_log)
-        
-        # Give clients 3 seconds to process the response and auto-disconnect 
-        # so they don't accidentally get sampled for the next round.
-        time.sleep(3)
-        
-        self.total_accepted_clients += accepted
-        if self.total_accepted_clients >= NUM_CLIENTS:
-            print(f"\n{_sep()}")
-            print(f"  🎉 ALL {NUM_CLIENTS} CLIENT(S) HAVE SUCCESSFULLY COMPLETED TRAINING.")
-            print(f"  Aggregator shutting down.")
-            print(f"{_sep()}\n")
+        # Check if all clients are done
+        if len(self._accepted_ids) >= NUM_CLIENTS:
+            print(_sep())
+            print(f"  🎉  ALL {NUM_CLIENTS} CLIENT(S) SUBMITTED — aggregation complete.")
+            print(f"  Shutting down.")
+            print(_sep() + "\n")
             os._exit(0)
-        
-        return (aggregated_parameters, aggregated_metrics)
 
-    # ── Evaluation callback ─────────────────────────────────────────────
+        # Brief pause so clients can cleanly disconnect before the next round
+        time.sleep(2)
+        return aggregated, aggregated_metrics
+
+    # ── Evaluation (minimal — just log) ────────────────────────────────
     def aggregate_evaluate(self, server_round, results, failures):
         if not results:
             return None, {}
-
-        print(f"\n  ROUND {server_round}  —  EVALUATE")
         for _, eval_res in results:
             cid  = eval_res.metrics.get("client_id", "unknown")
-            loss = eval_res.loss
-            n    = eval_res.num_examples
-            print(f"    {cid}: loss={loss:.4f}  samples={n:,}")
-
+            print(f"  eval  {cid}: loss={eval_res.loss:.4f}  samples={eval_res.num_examples:,}")
         return super().aggregate_evaluate(server_round, results, failures)
 
-    def _save_round_log(self, round_log: dict):
-        filename = LOG_DIR / f"session_{SESSION_ID}.json"
-        
-        if filename.exists():
-            with open(filename, "r", encoding="utf-8") as f:
-                try:
-                    data = json.load(f)
-                except json.JSONDecodeError:
-                    data = {"session_id": SESSION_ID, "rounds": []}
+    # ── Persist round log ───────────────────────────────────────────────
+    def _save_log(self, round_log: dict):
+        log_file = LOG_DIR / f"session_{SESSION_ID}.json"
+        if log_file.exists():
+            try:
+                data = json.loads(log_file.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                data = {"session_id": SESSION_ID, "rounds": []}
         else:
             data = {"session_id": SESSION_ID, "rounds": []}
-            
+
         data["rounds"].append(round_log)
-        
-        with open(filename, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4)
-        print(f"  📄  Log updated → {filename.name}")
+        log_file.write_text(json.dumps(data, indent=4), encoding="utf-8")
+        print(f"  📄  Log → {log_file.name}")
 
 
 # =========================================================
-# STRATEGY — clients are fully independent
+# STRATEGY INSTANCE
 # =========================================================
 
 strategy = SecureFedAvg(
     fraction_fit=1.0,
-    min_fit_clients=MIN_FIT_CLIENTS,             # 1 — a round starts with any available client
-    min_available_clients=MIN_AVAILABLE_CLIENTS, # 1 — don't wait for all clients
+    min_fit_clients=1,        # Start as soon as any client connects
+    min_available_clients=1,  # Do not wait for all clients simultaneously
     fraction_evaluate=0.0,
     min_evaluate_clients=0,
 )
@@ -349,18 +296,17 @@ strategy = SecureFedAvg(
 # =========================================================
 
 if __name__ == "__main__":
-
     print("\n" + _sep())
     print("  FEDERATED LEARNING AGGREGATOR  —  VisDrone / YOLO11n")
     print(_sep())
-    print(f"  Session ID      : {SESSION_ID}")
-    print(f"  Server address  : {SERVER_ADDRESS}")
-    print(f"  FL rounds       : {NUM_ROUNDS}")
-    print(f"  Expected clients: {NUM_CLIENTS}  (clients act independently)")
-    print(f"  Log directory   : {LOG_DIR.resolve()}")
-    print(f"\n  ► Clients can connect and send updates independently.")
-    print(f"    Training begins as soon as any client sends an update.")
-    print(f"\n  Waiting for client(s) to connect on {SERVER_ADDRESS}…")
+    print(f"  Session     : {SESSION_ID}")
+    print(f"  Address     : {SERVER_ADDRESS}")
+    print(f"  FL rounds   : {NUM_ROUNDS}")
+    print(f"  Clients expected : {NUM_CLIENTS}  (act independently)")
+    print(f"  Logs        : {LOG_DIR.resolve()}")
+    print(f"\n  Clients can connect at any time — no need to start simultaneously.")
+    print(f"  Duplicate submissions are detected and rejected automatically.")
+    print(f"\n  Waiting on {SERVER_ADDRESS}…")
     print(_sep() + "\n")
 
     start_server(

@@ -1,51 +1,57 @@
 # 06 — Configuration
 
-You can customize the behavior of the Server and the Clients easily without modifying the Python source code. You can use **Environment Variables** or **Command-Line Arguments**.
+Configuration is split between `.env` files (for secrets and defaults) and environment variable overrides (for one-off changes at launch).
 
-## Server Configuration
+---
 
-Open `aggregator/server.py` and modify the `NUM_CLIENTS` constant at the top of the file to change the total expected number of clients before the server auto-shuts down.
+## Aggregator — `aggregator/.env`
 
-```python
-NUM_CLIENTS = 3 
-```
+| Key | Default | Description |
+|-----|---------|-------------|
+| `FL_NUM_CLIENTS` | `3` | Total unique clients expected. Server auto-shuts down after all submit. |
+| `FL_SERVER_ADDRESS` | `0.0.0.0:8080` | Host and port the aggregator binds to. |
+| `FL_NUM_ROUNDS` | `3` | Number of Flower federated rounds. |
+| `FL_HASH_SECRET` | *(see note)* | Shared secret for HMAC-SHA256 hashing. **Must match clients.** |
 
-You can also override settings via environment variables when launching the server:
+> **Security:** Change `FL_HASH_SECRET` to a strong random string before deployment. The same value must be set in every client's `.env`. Never commit this value to version control.
 
-**Linux / macOS:**
+### Overriding at launch
 ```bash
-FL_NUM_CLIENTS=5 FL_SERVER_ADDRESS=0.0.0.0:9000 python3 -m aggregator.server
+FL_NUM_CLIENTS=2 FL_SERVER_ADDRESS=0.0.0.0:9000 python -m aggregator.server
 ```
 
-**Windows (PowerShell):**
-```powershell
-$env:FL_NUM_CLIENTS="5"; $env:FL_SERVER_ADDRESS="0.0.0.0:9000"; python -m aggregator.server
-```
+---
 
-## Client Configuration
+## Client — `client1_project/.env`
 
-Clients use command-line arguments for configuration.
+| Key | Default | Description |
+|-----|---------|-------------|
+| `FL_CLIENT_ID` | `client1` | Unique identifier for this client (used in logs and duplicate detection). |
+| `FL_SERVER_ADDRESS` | `localhost:8080` | Aggregator address. Replace with the server IP for remote machines. |
+| `FL_DATASET_YAML` | `data/client1/client1.yaml` | Path to the YOLO dataset config, relative to `client1_project/`. |
+| `FL_LOCAL_EPOCHS` | `1` | YOLO training epochs per round. |
+| `FL_IMAGE_SIZE` | `640` | Image size for YOLO training. |
+| `FL_WEIGHTS` | `yolo11n.pt` | Baseline YOLO weights file inside `client1_project/`. |
+| `FL_HASH_SECRET` | *(see note)* | Shared secret for HMAC-SHA256 hashing. **Must match aggregator.** |
 
-### Available Arguments
+---
 
-| Argument | Default | Description |
-|---|---|---|
-| `--server` | `localhost:8080` | IP and port of the aggregator |
-| `--id` | `client1` | Unique ID for the client (used for logging) |
-| `--data` | `data/client1/client1.yaml` | Path to the YAML dataset file |
-| `--epochs` | `1` | Number of YOLO training epochs |
-| `--imgsz` | `640` | Image size for YOLO |
-| `--weights` | `yolo11n.pt` | Path to the initial YOLO weights |
+## Client — Command-Line Flags
 
-### Example Client Command
+| Flag | Description |
+|------|-------------|
+| *(none)* | Train locally then connect to aggregator (default behavior) |
+| `--train` | Run local YOLO training only — does not connect |
+| `--connect` | Connect and send model to aggregator — skips training |
+| `--train --connect` | Explicit train-then-connect (same as default) |
 
+### Example: remote aggregator
 ```bash
-python client.py \
-    --server 192.168.1.5:8080 \
-    --id my_custom_client \
-    --data data/custom/dataset.yaml \
-    --epochs 5 \
-    --imgsz 320
+# In client1_project/.env:
+FL_SERVER_ADDRESS=192.168.1.5:8080
+FL_HASH_SECRET=my-strong-random-secret
+
+python client1.py
 ```
 
 ---

@@ -1,68 +1,74 @@
 # 03 — Server Setup
 
-This guide shows you how to set up the central Aggregator Server. The steps are provided for Windows, Linux, and macOS.
+This guide shows how to set up the central Aggregator on the server machine.
+
+---
 
 ## 1. Prerequisites
 
-- Python 3.9, 3.10, or 3.11 installed on your system.
-- Network access (Port 8080 open if clients are on different machines).
+- Python 3.9, 3.10, or 3.11
+- Network access — clients need to reach the server on the configured port (default `8080`)
+
+---
 
 ## 2. Create a Virtual Environment
 
-Open a terminal (or Command Prompt / PowerShell on Windows) and navigate to the project root (`FL-V1`).
+From the project root (`FL-V1/`):
 
 **Linux / macOS:**
 ```bash
-cd /path/to/FL-V1
 python3 -m venv .venv
 source .venv/bin/activate
 ```
 
 **Windows:**
 ```powershell
-cd C:\path\to\FL-V1
 python -m venv .venv
 .venv\Scripts\activate
 ```
 
-## 3. Install Dependencies
+---
 
-With the virtual environment active, install the required packages:
+## 3. Install Dependencies
 
 ```bash
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-> **Note:** The `requirements.txt` includes `flwr`, `ultralytics`, and `torch`. 
+---
 
-## 4. Verify Server Configuration
+## 4. Configure the Aggregator
 
-Open `aggregator/server.py` in a text editor and ensure the `NUM_CLIENTS` constant is set to the number of clients you intend to test with.
+Open `aggregator/.env` and set the values for your environment:
 
-```python
-# ── Change this single constant to match your number of clients ──
-NUM_CLIENTS = 3
+```dotenv
+FL_NUM_CLIENTS=3            # How many unique clients will submit
+FL_SERVER_ADDRESS=0.0.0.0:8080
+FL_NUM_ROUNDS=3
+FL_HASH_SECRET=change-me-to-a-strong-secret   # Must match all clients
 ```
 
-By default, the server binds to `0.0.0.0:8080`, meaning it will accept connections from any IP address on port 8080.
+> **Important:** `FL_HASH_SECRET` must be identical on the server and every client. It is used for HMAC-SHA256 integrity verification.
 
-## 5. Get Your IP Address
+---
 
-If your clients are on different computers, they need to know the Server's IP address.
+## 5. Find Your Server IP
+
+Clients on other machines need your server's IP address.
 
 **Linux / macOS:**
 ```bash
 hostname -I
-# OR
-ipconfig getifaddr en0
 ```
 
 **Windows:**
 ```powershell
 ipconfig
+# Look for IPv4 Address under your active adapter
 ```
-Look for the `IPv4 Address` under your active Wi-Fi or Ethernet adapter (e.g., `192.168.1.5`).
+
+Set `FL_SERVER_ADDRESS` in each client's `.env` to `<your-ip>:8080`.
 
 ---
 

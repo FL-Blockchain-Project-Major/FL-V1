@@ -1,539 +1,257 @@
-import flwr as fl
-from ultralytics import YOLO
+"""
+Federated Learning Client — client1.py
+=======================================
+Run from inside the client1_project/ directory:
+
+    python client1.py              # train then connect (default)
+    python client1.py --train      # local training only
+    python client1.py --connect    # connect and send pre-trained model
+    python client1.py --train --connect  # same as default
+
+All defaults are set via the .env file in this directory.
+"""
+
+import argparse
+import os
+import sys
+import threading
+import time
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Load .env from the same directory as this script
+load_dotenv(Path(__file__).resolve().parent / ".env")
+
+from ultralytics import YOLO
+import flwr as fl
 
 from utils.model_utils import get_parameters, set_parameters
 from security.hashing import hash_parameters
-import threading
-import time
-import os
 
 
 # =========================================================
-# PROJECT PATHS
+# CONFIGURATION  (all defaults come from .env)
 # =========================================================
 
-BASE_DIR = Path(__file__).resolve().parent
+CLIENT_ID     = os.environ.get("FL_CLIENT_ID",    "client1")
+SERVER_ADDRESS = os.environ.get("FL_SERVER_ADDRESS", "localhost:8080")
+DATASET_YAML  = os.environ.get("FL_DATASET_YAML", "data/client1/client1.yaml")
+LOCAL_EPOCHS  = int(os.environ.get("FL_LOCAL_EPOCHS", "1"))
+IMAGE_SIZE    = int(os.environ.get("FL_IMAGE_SIZE",   "640"))
+WEIGHTS       = os.environ.get("FL_WEIGHTS",      "yolo11n.pt")
 
-DATASET_DIR = BASE_DIR / "data" / "client1"
-DATASET_PATH = DATASET_DIR / "client1.yaml"
-IMAGES_DIR = DATASET_DIR / "images"
-LABELS_DIR = DATASET_DIR / "labels"
-
-
-# =========================================================
-# CONFIGURATION
-# =========================================================
-
-CLIENT_ID = "client1"
-
-LOCAL_EPOCHS = 1
-IMAGE_SIZE = 640
-
-SERVER_ADDRESS = "10.5.70.249:8080"
+BASE_DIR      = Path(__file__).resolve().parent
+DATASET_PATH  = BASE_DIR / DATASET_YAML
+IMAGES_DIR    = DATASET_PATH.parent / "images"
+LABELS_DIR    = DATASET_PATH.parent / "labels"
+RESULTS_DIR   = BASE_DIR / "results"
 
 
 # =========================================================
-# HELPER FUNCTIONS
+# HELPERS
 # =========================================================
 
-def count_training_images():
-    """Count images in Client 1's local dataset."""
+def _sep(char="─", width=60):
+    return char * width
 
-    extensions = [
-        "*.jpg",
-        "*.jpeg",
-        "*.png"
-    ]
 
+def _count_images(images_dir: Path) -> int:
     total = 0
-
-    for extension in extensions:
-        total += len(list(IMAGES_DIR.glob(extension)))
-
+    for ext in ("*.jpg", "*.jpeg", "*.png"):
+        total += len(list(images_dir.glob(ext)))
     return total
 
 
-def count_label_files():
-    """Count YOLO label files."""
-
-    if not LABELS_DIR.exists():
+def _count_labels(labels_dir: Path) -> int:
+    if not labels_dir.exists():
         return 0
+    return len(list(labels_dir.glob("*.txt")))
 
-    return len(list(LABELS_DIR.glob("*.txt")))
+
+def _verify_paths():
+    """Raise FileNotFoundError if required paths are missing."""
+    for path, label in [
+        (DATASET_PATH.parent, "Dataset directory"),
+        (IMAGES_DIR,          "Images directory"),
+        (LABELS_DIR,          "Labels directory"),
+        (DATASET_PATH,        "Dataset YAML"),
+    ]:
+        if not path.exists():
+            raise FileNotFoundError(f"{label} not found: {path}")
 
 
-def count_model_parameters(model):
+# =========================================================
+# TRAINING
+# =========================================================
+
+def run_training() -> list:
     """
-    Count total and trainable model parameters.
-
-    IMPORTANT:
-    We use requires_grad, NOT grad.
-
-    grad is normally None before training starts.
+    Train YOLO locally and return updated model parameters.
+    Returns the list of NumPy arrays (model weights).
     """
+    _verify_paths()
 
-    total_params = sum(
-        p.numel()
-        for p in model.parameters()
+    num_images = _count_images(IMAGES_DIR)
+    num_labels = _count_labels(LABELS_DIR)
+
+    if num_images == 0:
+        raise RuntimeError(f"No images found in {IMAGES_DIR}")
+    if num_labels == 0:
+        raise RuntimeError(f"No label files found in {LABELS_DIR}")
+
+    print(_sep("═", 60))
+    print(f"  FL CLIENT  —  {CLIENT_ID.upper()}")
+    print(_sep())
+    print(f"  Dataset   : {DATASET_PATH}")
+    print(f"  Images    : {num_images:,}  |  Labels : {num_labels:,}")
+    print(f"  Epochs    : {LOCAL_EPOCHS}  |  Img size: {IMAGE_SIZE}")
+    print(f"  Weights   : {WEIGHTS}")
+    print(_sep("═", 60))
+
+    yolo  = YOLO(WEIGHTS)
+    model = yolo.model
+
+    # Ensure all parameters are trainable
+    for p in model.parameters():
+        p.requires_grad = True
+
+    print(f"\n  ► Training locally ({num_images:,} images × {LOCAL_EPOCHS} epoch(s))…\n")
+
+    yolo.train(
+        data=str(DATASET_PATH),
+        epochs=LOCAL_EPOCHS,
+        imgsz=IMAGE_SIZE,
+        project=str(RESULTS_DIR),
+        name=f"{CLIENT_ID}_training",
+        exist_ok=True,
+        verbose=True,
     )
 
-    trainable_params = sum(
-        p.numel()
-        for p in model.parameters()
-        if p.requires_grad
-    )
+    print(f"\n  ✔  Local training complete.")
 
-    frozen_params = total_params - trainable_params
+    # Extract and hash parameters
+    params = get_parameters(model)
+    model_hash = hash_parameters(params)
 
-    return (
-        total_params,
-        trainable_params,
-        frozen_params
-    )
+    print(f"  ✔  SHA-256 hash : {model_hash[:32]}…")
+    print(_sep("═", 60) + "\n")
+
+    # Persist the hash so --connect can reuse it
+    hash_file = BASE_DIR / ".last_hash"
+    hash_file.write_text(model_hash)
+
+    return params, model_hash, num_images
 
 
 # =========================================================
 # FEDERATED CLIENT
 # =========================================================
 
-class Client1(fl.client.NumPyClient):
+class FLClient(fl.client.NumPyClient):
+    """Flower client that skips local training and sends pre-trained weights."""
 
-    def __init__(self):
-
-        print("\n" + "=" * 60)
-        print("INITIALIZING CLIENT 1")
-        print("=" * 60)
-
-        # -------------------------------------------------
-        # DATASET PATHS
-        # -------------------------------------------------
-
-        print(f"\nProject directory:")
-        print(BASE_DIR)
-
-        print(f"\nDataset directory:")
-        print(DATASET_DIR)
-
-        print(f"\nImages directory:")
-        print(IMAGES_DIR)
-
-        print(f"\nLabels directory:")
-        print(LABELS_DIR)
-
-        print(f"\nDataset YAML:")
-        print(DATASET_PATH)
-
-        # -------------------------------------------------
-        # VERIFY PATHS
-        # -------------------------------------------------
-
-        if not DATASET_DIR.exists():
-            raise FileNotFoundError(
-                f"Dataset directory not found:\n{DATASET_DIR}"
-            )
-
-        if not IMAGES_DIR.exists():
-            raise FileNotFoundError(
-                f"Images directory not found:\n{IMAGES_DIR}"
-            )
-
-        if not LABELS_DIR.exists():
-            raise FileNotFoundError(
-                f"Labels directory not found:\n{LABELS_DIR}"
-            )
-
-        if not DATASET_PATH.exists():
-            raise FileNotFoundError(
-                f"Dataset YAML not found:\n{DATASET_PATH}"
-            )
-
-        # -------------------------------------------------
-        # COUNT DATASET
-        # -------------------------------------------------
-
-        self.num_examples = count_training_images()
-        self.num_labels = count_label_files()
-
-        if self.num_examples == 0:
-            raise RuntimeError(
-                f"No images found in:\n{IMAGES_DIR}"
-            )
-
-        if self.num_labels == 0:
-            raise RuntimeError(
-                f"No YOLO label files found in:\n{LABELS_DIR}"
-            )
-
-        # -------------------------------------------------
-        # DATASET INFORMATION
-        # -------------------------------------------------
-
-        print("\n" + "=" * 60)
-        print("CLIENT 1 DATASET INFORMATION")
-        print("=" * 60)
-
-        print(
-            f"Images found             : "
-            f"{self.num_examples:,}"
-        )
-
-        print(
-            f"YOLO label files         : "
-            f"{self.num_labels:,}"
-        )
-
-        print("=" * 60)
-
-        # -------------------------------------------------
-        # LOAD YOLO MODEL
-        # -------------------------------------------------
-
-        print("\nLoading YOLOv11 Nano model...")
-
-        self.yolo = YOLO("yolo11n.pt")
-
-        # Underlying PyTorch model
-        self.model = self.yolo.model
-
-        # -------------------------------------------------
-        # ENSURE PARAMETERS ARE TRAINABLE
-        # -------------------------------------------------
-
-        for parameter in self.model.parameters():
-            parameter.requires_grad = True
-
-        # -------------------------------------------------
-        # COUNT MODEL PARAMETERS
-        # -------------------------------------------------
-
-        (
-            self.total_params,
-            self.trainable_params,
-            self.frozen_params
-        ) = count_model_parameters(self.model)
-
-        # -------------------------------------------------
-        # MODEL INFORMATION
-        # -------------------------------------------------
-
-        print("\n" + "=" * 60)
-        print("CLIENT 1 MODEL INFORMATION")
-        print("=" * 60)
-
-        print(
-            f"Client ID               : "
-            f"{CLIENT_ID}"
-        )
-
-        print(
-            f"Local training images   : "
-            f"{self.num_examples:,}"
-        )
-
-        print(
-            f"YOLO label files        : "
-            f"{self.num_labels:,}"
-        )
-
-        print(
-            f"Total model parameters  : "
-            f"{self.total_params:,} "
-            f"({self.total_params / 1_000_000:.2f}M)"
-        )
-
-        print(
-            f"Trainable parameters    : "
-            f"{self.trainable_params:,} "
-            f"({self.trainable_params / 1_000_000:.2f}M)"
-        )
-
-        print(
-            f"Frozen parameters       : "
-            f"{self.frozen_params:,}"
-        )
-
-        print(
-            f"Local epochs / round    : "
-            f"{LOCAL_EPOCHS}"
-        )
-
-        print(
-            f"Image size              : "
-            f"{IMAGE_SIZE}"
-        )
-
-        print(
-            f"Aggregator server       : "
-            f"{SERVER_ADDRESS}"
-        )
-
-        print("=" * 60)
-
-        print("\nClient 1 initialized successfully.")
-
-    # =====================================================
-    # GET INITIAL MODEL PARAMETERS
-    # =====================================================
+    def __init__(self, parameters: list, model_hash: str, num_examples: int):
+        self._parameters  = parameters
+        self._model_hash  = model_hash
+        self._num_examples = num_examples
 
     def get_parameters(self, config):
-
-        print("\n" + "=" * 60)
-        print("CLIENT 1: CONNECTED TO AGGREGATOR")
-        print("=" * 60)
-
-        print(
-            f"Aggregator server: "
-            f"{SERVER_ADDRESS}"
-        )
-
-        print(
-            "Successfully connected and "
-            "sending initial model parameters..."
-        )
-
-        print(
-            f"Parameters being sent: "
-            f"{self.total_params:,}"
-        )
-
-        print("=" * 60)
-
-        return get_parameters(self.model)
-
-    # =====================================================
-    # FEDERATED TRAINING
-    # =====================================================
+        return self._parameters
 
     def fit(self, parameters, config):
-
-        print("\n" + "=" * 60)
-        print("CLIENT 1: NEW FEDERATED TRAINING ROUND")
-        print("=" * 60)
-
-        # -------------------------------------------------
-        # RECEIVE GLOBAL MODEL
-        # -------------------------------------------------
-
-        print("\n[1] Receiving global model...")
-
-        set_parameters(
-            self.model,
-            parameters
-        )
-
-        print("Global model loaded successfully.")
-
-        # -------------------------------------------------
-        # TRAINING INFORMATION
-        # -------------------------------------------------
-
-        print("\n" + "-" * 60)
-        print("LOCAL TRAINING INFORMATION")
-        print("-" * 60)
-
-        print(
-            f"Client                  : {CLIENT_ID}"
-        )
-
-        print(
-            f"Training images         : "
-            f"{self.num_examples:,}"
-        )
-
-        print(
-            f"Trainable parameters    : "
-            f"{self.trainable_params:,}"
-        )
-
-        print(
-            f"Local epochs            : "
-            f"{LOCAL_EPOCHS}"
-        )
-
-        print(
-            f"Image size              : "
-            f"{IMAGE_SIZE}"
-        )
-
-        print("-" * 60)
-
-        # -------------------------------------------------
-        # LOCAL YOLO TRAINING
-        # -------------------------------------------------
-
-        print("\n[2] Starting local YOLO training...")
-
-        self.yolo.train(
-            data=str(DATASET_PATH),
-            epochs=LOCAL_EPOCHS,
-            imgsz=IMAGE_SIZE,
-
-            project=str(
-                BASE_DIR / "results"
-            ),
-
-            name=f"{CLIENT_ID}_training",
-
-            exist_ok=True,
-
-            verbose=True
-        )
-
-        print("\nLocal training completed.")
-
-        # -------------------------------------------------
-        # UPDATED PARAMETERS
-        # -------------------------------------------------
-
-        print(
-            "\n[3] Extracting updated model parameters..."
-        )
-
-        updated_parameters = get_parameters(
-            self.model
-        )
-
-        updated_count = len(updated_parameters)
-
-        print(
-            f"Parameter tensors extracted: "
-            f"{updated_count}"
-        )
-
-        # -------------------------------------------------
-        # HASH
-        # -------------------------------------------------
-
-        print(
-            "\n[4] Generating SHA-256 hash..."
-        )
-
-        model_hash = hash_parameters(
-            updated_parameters
-        )
-
-        print(
-            "\nCLIENT 1 MODEL HASH:"
-        )
-
-        print(model_hash)
-
-        # -------------------------------------------------
-        # SEND TO AGGREGATOR
-        # -------------------------------------------------
-
-        print(
-            "\n[5] Sending updated model "
-            "parameters to aggregator..."
-        )
-
+        # Server sends global weights but we send our local update directly.
+        # Ignore the server's global model — we already trained locally.
         metrics = {
-            "client_id": CLIENT_ID,
-            "model_hash": model_hash,
-
-            # Dataset information
-            "num_images": self.num_examples,
-            "num_labels": self.num_labels,
-
-            # Model information
-            "total_parameters": self.total_params,
-            "trainable_parameters": self.trainable_params,
-
-            # Training information
-            "local_epochs": LOCAL_EPOCHS
+            "client_id":  CLIENT_ID,
+            "model_hash": self._model_hash,
         }
 
-        print(
-            "\n" + "=" * 60
-        )
+        print(f"  ► Sending update to aggregator  ({self._num_examples:,} images)")
+        print(f"    Hash : {self._model_hash[:32]}…")
 
-        print(
-            "CLIENT 1: MODEL UPDATE READY"
-        )
-
-        print(
-            f"Images trained          : "
-            f"{self.num_examples:,}"
-        )
-
-        print(
-            f"Local epochs            : "
-            f"{LOCAL_EPOCHS}"
-        )
-
-        print(
-            f"Trainable parameters    : "
-            f"{self.trainable_params:,}"
-        )
-
-        print(
-            f"Model hash              : "
-            f"{model_hash}"
-        )
-
-        print(
-            "Sending update to aggregator..."
-        )
-        print("✔  Task complete. Client will auto-disconnect.")
-
-        print("=" * 60)
-
-        # Schedule auto-shutdown so the client stops after sending data
-        def auto_shutdown():
+        # Schedule shutdown after sending
+        def _shutdown():
             time.sleep(2)
             os._exit(0)
-        threading.Thread(target=auto_shutdown, daemon=True).start()
+        threading.Thread(target=_shutdown, daemon=True).start()
 
-        return (
-            updated_parameters,
-            self.num_examples,
-            metrics
-        )
-
-    # =====================================================
-    # EVALUATION
-    # =====================================================
+        return self._parameters, self._num_examples, metrics
 
     def evaluate(self, parameters, config):
-
-        print(
-            "\nCLIENT 1: Evaluating global model"
-        )
-
-        set_parameters(
-            self.model,
-            parameters
-        )
-
-        return (
-            0.0,
-            self.num_examples,
-            {}
-        )
+        # Not performing evaluation — return neutral values
+        return 0.0, self._num_examples, {}
 
 
 # =========================================================
-# START CLIENT
+# CONNECT
 # =========================================================
+
+def run_connect(parameters: list, model_hash: str, num_examples: int):
+    """Connect to the aggregator and send the trained model."""
+    print(_sep("═", 60))
+    print(f"  FL CLIENT  —  {CLIENT_ID.upper()}")
+    print(_sep())
+    print(f"  Aggregator: {SERVER_ADDRESS}")
+    print(f"  Images    : {num_examples:,}")
+    print(f"  Hash      : {model_hash[:32]}…")
+    print(_sep("═", 60))
+    print(f"\n  Connecting to aggregator at {SERVER_ADDRESS}…\n")
+
+    client = FLClient(parameters, model_hash, num_examples)
+    fl.client.start_numpy_client(server_address=SERVER_ADDRESS, client=client)
+
+
+# =========================================================
+# ENTRYPOINT
+# =========================================================
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Federated Learning Client 1",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Modes:
+  (no flags)          Train then connect to the aggregator (default)
+  --train             Local training only — does NOT connect to aggregator
+  --connect           Connect and send the last trained model (skip training)
+  --train --connect   Same as default: train then connect
+
+All configuration defaults are loaded from the .env file.
+        """
+    )
+    parser.add_argument("--train",   action="store_true", help="Run local YOLO training")
+    parser.add_argument("--connect", action="store_true", help="Connect and send model to aggregator")
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    # Default: both train + connect
+    do_train   = args.train   or (not args.train and not args.connect)
+    do_connect = args.connect or (not args.train and not args.connect)
+
+    parameters  = None
+    model_hash  = None
+    num_examples = 0
+
+    if do_train:
+        parameters, model_hash, num_examples = run_training()
+    
+    if do_connect and not do_train:
+        # Load a previously trained model to send
+        yolo  = YOLO(WEIGHTS)
+        model = yolo.model
+        parameters   = get_parameters(model)
+        model_hash   = hash_parameters(parameters)
+        num_examples = _count_images(IMAGES_DIR)
+        print(f"  ► Using current model weights (no training requested).")
+        print(f"    Hash : {model_hash[:32]}…\n")
+
+    if do_connect:
+        run_connect(parameters, model_hash, num_examples)
+
 
 if __name__ == "__main__":
-
-    print("\n" + "=" * 60)
-    print("STARTING FEDERATED LEARNING CLIENT 1")
-    print("=" * 60)
-
-    print(
-        f"\nAttempting connection to aggregator:"
-    )
-
-    print(
-        f"SERVER: {SERVER_ADDRESS}"
-    )
-
-    client = Client1()
-
-    fl.client.start_numpy_client(
-        server_address=SERVER_ADDRESS,
-        client=client
-    )
+    main()
