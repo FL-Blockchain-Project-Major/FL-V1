@@ -52,11 +52,24 @@ RESULTS_DIR   = BASE_DIR / "results"
 # HELPERS
 # =========================================================
 
-def _sep(char="─", width=60):
-    return char * width
+
+IMAGE_SIZE = 640
 
 
-def _count_images(images_dir: Path) -> int:
+
+# =========================================================
+# HELPER FUNCTIONS
+# =========================================================
+
+def count_training_images():
+    """Count images in Client 1's local dataset."""
+
+    extensions = [
+        "*.jpg",
+        "*.jpeg",
+        "*.png"
+    ]
+
     total = 0
     for ext in ("*.jpg", "*.jpeg", "*.png"):
         total += len(list(images_dir.glob(ext)))

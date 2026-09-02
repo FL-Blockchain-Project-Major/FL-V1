@@ -79,7 +79,7 @@ FL_CLIENT_ID=client1
 FL_SERVER_ADDRESS=192.168.1.5:8080   # Replace with actual server IP
 FL_DATASET_YAML=data/client1/client1.yaml
 FL_LOCAL_EPOCHS=1
-FL_IMAGE_SIZE=640
+FL_IMAGE_SIZE=64
 FL_WEIGHTS=yolo11n.pt
 FL_HASH_SECRET=change-me-to-a-strong-secret   # Must match aggregator
 ```

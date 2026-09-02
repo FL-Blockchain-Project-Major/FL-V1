@@ -30,7 +30,7 @@ FL_NUM_CLIENTS=2 FL_SERVER_ADDRESS=0.0.0.0:9000 python -m aggregator.server
 | `FL_SERVER_ADDRESS` | `localhost:8080` | Aggregator address. Replace with the server IP for remote machines. |
 | `FL_DATASET_YAML` | `data/client1/client1.yaml` | Path to the YOLO dataset config, relative to `client1_project/`. |
 | `FL_LOCAL_EPOCHS` | `1` | YOLO training epochs per round. |
-| `FL_IMAGE_SIZE` | `640` | Image size for YOLO training. |
+| `FL_IMAGE_SIZE` | `64` | Image size for YOLO training (`64x64`). |
 | `FL_WEIGHTS` | `yolo11n.pt` | Baseline YOLO weights file inside `client1_project/`. |
 | `FL_HASH_SECRET` | *(see note)* | Shared secret for HMAC-SHA256 hashing. **Must match aggregator.** |
 

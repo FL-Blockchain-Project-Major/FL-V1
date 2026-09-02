@@ -40,5 +40,5 @@ Connecting to aggregator at 192.168.1.5:8080…
 **Cause:** The GPU or RAM is full during training.
 **Fix:**
 - Reduce the batch size (pass `--batch 4` or similar to the YOLO arguments if modified in code).
-- Reduce `--imgsz` to 320 instead of 640.
+- Reduce `--imgsz` to 32 instead of 64.
 - Ensure clients are running independently instead of concurrently on the same machine.
