@@ -1,8 +1,7 @@
 # Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
+**pycache**/
+*.py[cod]
+*$py.class
 .Python
 
 # Virtual environments
@@ -14,27 +13,31 @@ ENV/
 # Environment / secrets
 .env
 .env.*
+!.env.example
 
-# YOLO model weights (large binary files)
+# YOLO / ML model weights
+# Large binary files
 *.pt
 *.pth
 *.onnx
-
 # Training / evaluation output
 results/
 runs/
 aggregator/results/
 
-# Logs (keep structure, ignore content)
-aggregator/logs/
-client_project/logs/
+# Logs
+# Keep directories, ignore their contents
+aggregator/logs/*
+client_project/logs/*
 
-# Dataset files (large, distributed separately)
+# Datasets
+# Large files distributed separately
 clients/
 VisDrone2019-DET-train/
 VisDrone2019-DET-val/
 VisDrone2019-DET-test-dev/
 VisDrone2019-DET-test-challenge/
+# Client datasets
 client1_project/data/client1/images/
 client1_project/data/client1/labels/
 client1_project/data/client1/annotations/
@@ -47,18 +50,24 @@ client3_project/data/client3/images/
 client3_project/data/client3/labels/
 client3_project/data/client3/annotations/
 client3_project/data/client3/labels.cache
+# Generic client dataset directories
 client_project/data/*/images/
 client_project/data/*/labels/
 client_project/data/*/annotations/
 client_project/data/*.cache
 
-# OS / editor artifacts
+# Jupyter
+.ipynb_checkpoints/
+
+# OS artifacts
 .DS_Store
 Thumbs.db
-.ipynb_checkpoints/
+
+# Editor / IDE
+.vscode/
+.idea/
 *.swp
 *.swo
 
-# IDE
-.vscode/
-.idea/
+# Project-specific generated files
+.last_hash
